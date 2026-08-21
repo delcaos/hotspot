@@ -1,101 +1,60 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
-const BET = 10;
-const RUN_LENGTH = 40;
-const STORAGE_KEY = "fourtune-vaults-state-v1";
-const OUTCOMES = [0, 1, 3, 10] as const;
+const STORAGE_KEY = "hotspot-archery-state-v3";
+const LEGACY_STORAGE_KEYS = [
+  "fourtune-vaults-state-v1",
+  "hotspot-archery-state-v1",
+  "hotspot-archery-state-v2",
+];
+const ARROW_STAKE = 10;
+const QUIVER_SIZE = 10;
+const TARGET_BOARD_RTP = 0.99;
+const FALLOFF_SIGMA = 0.14;
+const TARGET_RADIUS = 0.495;
 
-type Outcome = (typeof OUTCOMES)[number];
-type VaultKind = "ember" | "fountain" | "comet" | "stone";
+type Point = { x: number; y: number };
 
-type VaultDefinition = {
-  id: VaultKind;
-  name: string;
-  subtitle: string;
-  symbol: string;
-  rtp: number;
-  probabilities: Record<Outcome, number>;
+type Hotspot = Point & {
+  peakRtp: number;
+  payoutNoise: number;
+  baseRtp: number;
+  kernelMean: number;
 };
 
-type Play = {
+type Shot = Point & {
   id: number;
-  turn: number;
-  vault: number;
-  outcome: Outcome;
+  number: number;
+  meanRtp: number;
+  multiplier: number;
+  returned: number;
   net: number;
+  distance: number;
 };
 
-type Scan = {
+type Round = {
   id: number;
-  vault: number;
-  clue: VaultKind;
+  hotspot: Hotspot;
+  shots: Shot[];
+  finished: boolean;
 };
 
 type GameState = {
-  version: 1;
+  version: 3;
   balance: number;
-  insight: number;
-  run: number;
-  turn: number;
-  assignments: VaultKind[];
-  history: Play[];
-  scans: Scan[];
-  scanTokens: number;
-  revealed: boolean;
-  guessVault: number | null;
+  round: Round;
   sound: boolean;
   stats: {
-    runs: number;
-    correctGuesses: number;
+    rounds: number;
+    arrows: number;
     wagered: number;
     returned: number;
-    biggestWin: number;
+    bestMultiplier: number;
     refills: number;
   };
 };
-
-const VAULTS: VaultDefinition[] = [
-  {
-    id: "ember",
-    name: "Ember",
-    subtitle: "Best long-run value",
-    symbol: "✦",
-    rtp: 0.995,
-    probabilities: { 0: 0.505, 1: 0.315, 3: 0.16, 10: 0.02 },
-  },
-  {
-    id: "fountain",
-    name: "Fountain",
-    subtitle: "Frequent, modest returns",
-    symbol: "≈",
-    rtp: 0.98,
-    probabilities: { 0: 0.225, 1: 0.69, 3: 0.08, 10: 0.005 },
-  },
-  {
-    id: "comet",
-    name: "Comet",
-    subtitle: "Rare, volatile bursts",
-    symbol: "☄",
-    rtp: 0.965,
-    probabilities: { 0: 0.705, 1: 0.17, 3: 0.065, 10: 0.06 },
-  },
-  {
-    id: "stone",
-    name: "Stone",
-    subtitle: "Steady but stubborn",
-    symbol: "◆",
-    rtp: 0.95,
-    probabilities: { 0: 0.42, 1: 0.43, 3: 0.14, 10: 0.01 },
-  },
-];
-
-const VAULT_IDS = VAULTS.map((vault) => vault.id);
-const LETTERS = ["A", "B", "C", "D"];
-const vaultById = Object.fromEntries(
-  VAULTS.map((vault) => [vault.id, vault]),
-) as Record<VaultKind, VaultDefinition>;
 
 function randomUnit() {
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
@@ -106,471 +65,460 @@ function randomUnit() {
   return Math.random();
 }
 
-function shuffledVaults() {
-  const ids = [...VAULT_IDS];
-  for (let i = ids.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(randomUnit() * (i + 1));
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-  }
-  return ids;
+function randomBetween(min: number, max: number) {
+  return min + randomUnit() * (max - min);
 }
 
-function freshState(previous?: GameState): GameState {
+function estimateKernelMean(point: Point) {
+  const gridSize = 121;
+  let total = 0;
+  let samples = 0;
+
+  for (let row = 0; row < gridSize; row += 1) {
+    const y = (row + 0.5) / gridSize;
+    for (let column = 0; column < gridSize; column += 1) {
+      const x = (column + 0.5) / gridSize;
+      if (distance({ x, y }, { x: 0.5, y: 0.5 }) > TARGET_RADIUS) continue;
+      const distanceSquared = (x - point.x) ** 2 + (y - point.y) ** 2;
+      total += Math.exp(-distanceSquared / (2 * FALLOFF_SIGMA ** 2));
+      samples += 1;
+    }
+  }
+
+  return total / samples;
+}
+
+function createHotspot(): Hotspot {
+  const angle = randomUnit() * Math.PI * 2;
+  const radius = Math.sqrt(randomUnit()) * 0.3;
+  const point = {
+    x: 0.5 + Math.cos(angle) * radius,
+    y: 0.5 + Math.sin(angle) * radius,
+  };
+  const peakRtp = randomBetween(2.4, 4.4);
+  const kernelMean = estimateKernelMean(point);
+  const baseRtp =
+    (TARGET_BOARD_RTP - peakRtp * kernelMean) / (1 - kernelMean);
+
   return {
-    version: 1,
-    balance: previous?.balance ?? 1000,
-    insight: previous?.insight ?? 0,
-    run: previous ? previous.run + 1 : 1,
-    turn: 0,
-    assignments: shuffledVaults(),
-    history: [],
-    scans: [],
-    scanTokens: 1,
-    revealed: false,
-    guessVault: null,
-    sound: previous?.sound ?? true,
-    stats: previous?.stats ?? {
-      runs: 0,
-      correctGuesses: 0,
+    ...point,
+    peakRtp,
+    payoutNoise: randomBetween(0.16, 0.55),
+    baseRtp,
+    kernelMean,
+  };
+}
+
+function createRound(id: number): Round {
+  return { id, hotspot: createHotspot(), shots: [], finished: false };
+}
+
+function createGame(): GameState {
+  return {
+    version: 3,
+    balance: 500,
+    round: createRound(1),
+    sound: true,
+    stats: {
+      rounds: 0,
+      arrows: 0,
       wagered: 0,
       returned: 0,
-      biggestWin: 0,
+      bestMultiplier: 0,
       refills: 0,
     },
   };
 }
 
-function permutations<T>(items: T[]): T[][] {
-  if (items.length === 0) return [[]];
-  return items.flatMap((item, index) =>
-    permutations([...items.slice(0, index), ...items.slice(index + 1)]).map(
-      (rest) => [item, ...rest],
-    ),
+function localMeanRtp(point: Point, hotspot: Hotspot) {
+  const distanceSquared =
+    (point.x - hotspot.x) ** 2 + (point.y - hotspot.y) ** 2;
+  return (
+    hotspot.baseRtp +
+    (hotspot.peakRtp - hotspot.baseRtp) *
+      Math.exp(-distanceSquared / (2 * FALLOFF_SIGMA ** 2))
   );
 }
 
-const POSSIBLE_LINEUPS = permutations(VAULT_IDS);
-
-function posterior(state: GameState) {
-  const logWeights = POSSIBLE_LINEUPS.map((lineup) => {
-    let score = 0;
-    for (const play of state.history) {
-      score += Math.log(
-        Math.max(
-          vaultById[lineup[play.vault]].probabilities[play.outcome],
-          Number.EPSILON,
-        ),
-      );
-    }
-    for (const scan of state.scans) {
-      score += Math.log(
-        lineup[scan.vault] === scan.clue ? 0.72 : 0.28 / 3,
-      );
-    }
-    return score;
-  });
-
-  const max = Math.max(...logWeights);
-  const raw = logWeights.map((weight) => Math.exp(weight - max));
-  const total = raw.reduce((sum, weight) => sum + weight, 0);
-  const weights = raw.map((weight) => weight / total);
-
-  return LETTERS.map((_, vaultIndex) => {
-    let bestChance = 0;
-    let expectedRtp = 0;
-    for (let i = 0; i < POSSIBLE_LINEUPS.length; i += 1) {
-      const kind = POSSIBLE_LINEUPS[i][vaultIndex];
-      expectedRtp += weights[i] * vaultById[kind].rtp;
-      if (kind === "ember") bestChance += weights[i];
-    }
-    return { bestChance, expectedRtp };
-  });
+function samplePayout(meanRtp: number, payoutNoise: number) {
+  const meanOneNoise =
+    1 + payoutNoise * Math.sqrt(3) * (2 * randomUnit() - 1);
+  return Math.max(0, Math.round(meanRtp * meanOneNoise * 20) / 20);
 }
 
-function sampleOutcome(kind: VaultKind): Outcome {
-  let cursor = randomUnit();
-  for (const outcome of OUTCOMES) {
-    cursor -= vaultById[kind].probabilities[outcome];
-    if (cursor <= 0) return outcome;
-  }
-  return 10;
-}
-
-function sampleScanClue(kind: VaultKind): VaultKind {
-  if (randomUnit() < 0.72) return kind;
-  const alternatives = VAULT_IDS.filter((id) => id !== kind);
-  return alternatives[Math.floor(randomUnit() * alternatives.length)];
+function distance(a: Point, b: Point) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function formatCredits(value: number) {
   return Math.round(value).toLocaleString("en-US");
 }
 
-function playTone(enabled: boolean, outcome: Outcome | "scan" | "guess") {
-  if (!enabled || typeof window === "undefined") return;
-  const AudioContextClass = window.AudioContext;
-  if (!AudioContextClass) return;
-  const context = new AudioContextClass();
+function multiplierClass(multiplier: number) {
+  if (multiplier >= 2) return "scorching";
+  if (multiplier >= 1) return "warm";
+  if (multiplier >= 0.65) return "cool";
+  return "cold";
+}
+
+function qualityLabel(peakRtp: number) {
+  if (peakRtp >= 4) return "ELITE";
+  if (peakRtp >= 3.4) return "VERY RICH";
+  if (peakRtp >= 2.9) return "RICH";
+  return "GOOD";
+}
+
+function varianceLabel(payoutNoise: number) {
+  if (payoutNoise >= 0.45) return "HIGH";
+  if (payoutNoise >= 0.3) return "MEDIUM";
+  return "LOW";
+}
+
+function playTone(enabled: boolean, multiplier: number | "reveal") {
+  if (!enabled || typeof window === "undefined" || !window.AudioContext) return;
+  const context = new window.AudioContext();
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const frequency =
-    outcome === "scan"
-      ? 520
-      : outcome === "guess"
-        ? 760
-        : outcome === 10
-          ? 880
-          : outcome === 3
-            ? 640
-            : outcome === 1
-              ? 360
-              : 150;
+    multiplier === "reveal" ? 700 : 150 + Math.min(multiplier, 5) * 130;
   oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-  oscillator.type = outcome === 0 ? "sawtooth" : "sine";
-  gain.gain.setValueAtTime(0.05, context.currentTime);
+  oscillator.type = multiplier === "reveal" ? "triangle" : "sine";
+  gain.gain.setValueAtTime(0.055, context.currentTime);
   gain.gain.exponentialRampToValueAtTime(
     0.0001,
-    context.currentTime + (outcome === 10 ? 0.55 : 0.22),
+    context.currentTime + (multiplier === "reveal" ? 0.55 : 0.2),
   );
   oscillator.connect(gain);
   gain.connect(context.destination);
   oscillator.start();
-  oscillator.stop(context.currentTime + (outcome === 10 ? 0.55 : 0.22));
+  oscillator.stop(context.currentTime + (multiplier === "reveal" ? 0.55 : 0.2));
   oscillator.addEventListener("ended", () => void context.close());
 }
 
 export default function Home() {
   const [game, setGame] = useState<GameState | null>(null);
-  const [notice, setNotice] = useState("Choose a vault to begin the read.");
-  const [showGuide, setShowGuide] = useState(false);
+  const [aim, setAim] = useState<Point>({ x: 0.5, y: 0.5 });
+  const [notice, setNotice] = useState(
+    "Click anywhere on the target to loose your first arrow.",
+  );
+  const [showRules, setShowRules] = useState(false);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as GameState;
-        if (parsed.version === 1 && Array.isArray(parsed.assignments)) {
-          setGame(parsed);
-          return;
+    const hydrationTimer = window.setTimeout(() => {
+      try {
+        LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+        const saved = window.localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as GameState;
+          if (parsed.version === 3 && parsed.round?.hotspot) {
+            setGame(parsed);
+            setNotice(
+              parsed.round.finished
+                ? "The hotspot is revealed. Study the pattern, then start a new round."
+                : `${QUIVER_SIZE - parsed.round.shots.length} arrows remain in this quiver.`,
+            );
+            return;
+          }
         }
+      } catch {
+        window.localStorage.removeItem(STORAGE_KEY);
       }
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
-    setGame(freshState());
+      setGame(createGame());
+    }, 0);
+
+    return () => window.clearTimeout(hydrationTimer);
   }, []);
 
   useEffect(() => {
     if (game) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game]);
 
-  const hunches = useMemo(() => (game ? posterior(game) : []), [game]);
-  const leader = hunches.length
-    ? hunches.reduce(
-        (best, hunch, index) =>
-          hunch.expectedRtp > hunches[best].expectedRtp ? index : best,
-        0,
-      )
-    : 0;
+  const bestShot = useMemo(() => {
+    if (!game?.round.shots.length) return null;
+    return game.round.shots.reduce((best, shot) =>
+      shot.multiplier > best.multiplier ? shot : best,
+    );
+  }, [game]);
+
+  const closestShot = useMemo(() => {
+    if (!game?.round.shots.length) return null;
+    return game.round.shots.reduce((best, shot) =>
+      shot.distance < best.distance ? shot : best,
+    );
+  }, [game]);
 
   if (!game) {
     return (
       <main className="loading-screen">
-        <div className="loading-mark">FV</div>
-        <p>Turning the tumblers…</p>
+        <div className="loading-target"><span /></div>
+        <p>STRINGING THE RANGE…</p>
       </main>
     );
   }
 
-  const lastPlay = game.history.at(-1);
-  const progress = (game.turn / RUN_LENGTH) * 100;
-  const completed = game.turn >= RUN_LENGTH;
-  const runNet = game.history.reduce((sum, play) => sum + play.net, 0);
+  const { round } = game;
+  const arrowsLeft = QUIVER_SIZE - round.shots.length;
+  const roundNet = round.shots.reduce((sum, shot) => sum + shot.net, 0);
+  const lifetimeNet = game.stats.returned - game.stats.wagered;
+  const hotspotStdDev = round.hotspot.peakRtp * round.hotspot.payoutNoise;
+  const hotspotVariance = hotspotStdDev ** 2;
+  const roundReturned = round.shots.reduce((sum, shot) => sum + shot.returned, 0);
+  const realizedRtp = round.shots.length
+    ? roundReturned / (round.shots.length * ARROW_STAKE)
+    : 0;
 
-  function openVault(vaultIndex: number) {
-    if (
-      !game ||
-      completed ||
-      game.revealed ||
-      game.balance < BET
-    )
+  function shoot(point: Point) {
+    if (!game || game.round.finished || game.balance < ARROW_STAKE) return;
+    if (distance(point, { x: 0.5, y: 0.5 }) > TARGET_RADIUS) {
+      setNotice("That aim sits outside the target. Pull it inside the outer ring.");
       return;
+    }
 
-    const outcome = sampleOutcome(game.assignments[vaultIndex]);
-    const returned = BET * outcome;
-    const nextTurn = game.turn + 1;
-    const net = returned - BET;
-    const newToken = nextTurn % 8 === 0 ? 1 : 0;
+    const meanRtp = localMeanRtp(point, game.round.hotspot);
+    const multiplier = samplePayout(meanRtp, game.round.hotspot.payoutNoise);
+    const returned = Math.round(ARROW_STAKE * multiplier);
+    const shotNumber = game.round.shots.length + 1;
+    const lastArrow = shotNumber === QUIVER_SIZE;
+    const net = returned - ARROW_STAKE;
+    const shot: Shot = {
+      ...point,
+      id: Date.now() + shotNumber,
+      number: shotNumber,
+      meanRtp,
+      multiplier,
+      returned,
+      net,
+      distance: distance(point, game.round.hotspot),
+    };
 
     setGame({
       ...game,
       balance: game.balance + net,
-      turn: nextTurn,
-      scanTokens: game.scanTokens + newToken,
-      history: [
-        ...game.history,
-        {
-          id: Date.now(),
-          turn: nextTurn,
-          vault: vaultIndex,
-          outcome,
-          net,
-        },
-      ],
+      round: {
+        ...game.round,
+        shots: [...game.round.shots, shot],
+        finished: lastArrow,
+      },
       stats: {
         ...game.stats,
-        wagered: game.stats.wagered + BET,
+        rounds: game.stats.rounds + (lastArrow ? 1 : 0),
+        arrows: game.stats.arrows + 1,
+        wagered: game.stats.wagered + ARROW_STAKE,
         returned: game.stats.returned + returned,
-        biggestWin: Math.max(game.stats.biggestWin, returned),
+        bestMultiplier: Math.max(game.stats.bestMultiplier, multiplier),
       },
     });
 
-    if (outcome === 10) setNotice(`Vault ${LETTERS[vaultIndex]} erupts — 10×!`);
-    else if (outcome === 3) setNotice(`Vault ${LETTERS[vaultIndex]} flashes — 3× returned.`);
-    else if (outcome === 1) setNotice(`Vault ${LETTERS[vaultIndex]} returns your stake.`);
-    else setNotice(`Vault ${LETTERS[vaultIndex]} stays quiet. What did that tell you?`);
-    if (newToken) setNotice("A new scan token is ready. Spend it wisely.");
-    playTone(game.sound, outcome);
+    if (lastArrow) {
+      setNotice("Quiver empty. The hidden field is now revealed.");
+      playTone(game.sound, "reveal");
+    } else if (multiplier >= 2) {
+      setNotice(`${multiplier.toFixed(2)}× — scorching. Search around arrow ${shotNumber}.`);
+      playTone(game.sound, multiplier);
+    } else if (multiplier >= 1) {
+      setNotice(`${multiplier.toFixed(2)}× — warm evidence, but the noise can bluff.`);
+      playTone(game.sound, multiplier);
+    } else {
+      setNotice(`${multiplier.toFixed(2)}× — a cold read. ${QUIVER_SIZE - shotNumber} arrows left.`);
+      playTone(game.sound, multiplier);
+    }
   }
 
-  function scanVault(vaultIndex: number) {
-    if (!game || game.scanTokens < 1 || game.revealed) return;
-    const clue = sampleScanClue(game.assignments[vaultIndex]);
-    setGame({
-      ...game,
-      scanTokens: game.scanTokens - 1,
-      scans: [
-        ...game.scans,
-        { id: Date.now(), vault: vaultIndex, clue },
-      ],
+  function handlePointerMove(event: PointerEvent<HTMLButtonElement>) {
+    if (event.pointerType === "touch") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setAim({
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
     });
-    setNotice(
-      `The scanner reads “${vaultById[clue].name}” for Vault ${LETTERS[vaultIndex]}. Clues are 72% reliable.`,
-    );
-    playTone(game.sound, "scan");
   }
 
-  function makeFinalCall(vaultIndex: number) {
-    if (!game || !completed || game.revealed) return;
-    const correct = game.assignments[vaultIndex] === "ember";
-    const award = correct ? 250 : 50;
-    setGame({
-      ...game,
-      insight: game.insight + award,
-      revealed: true,
-      guessVault: vaultIndex,
-      stats: {
-        ...game.stats,
-        runs: game.stats.runs + 1,
-        correctGuesses: game.stats.correctGuesses + (correct ? 1 : 0),
-      },
-    });
-    setNotice(
-      correct
-        ? `Perfect read. Vault ${LETTERS[vaultIndex]} held Ember. +250 insight.`
-        : `Not this time. The house grants +50 insight for finishing the read.`,
-    );
-    playTone(game.sound, "guess");
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+    };
+    setAim(point);
+    shoot(point);
   }
 
-  function refillWallet() {
+  function handleTargetKey(event: KeyboardEvent<HTMLButtonElement>) {
+    const step = event.shiftKey ? 0.01 : 0.035;
+    let next = aim;
+    if (event.key === "ArrowLeft") next = { ...aim, x: Math.max(0.02, aim.x - step) };
+    else if (event.key === "ArrowRight") next = { ...aim, x: Math.min(0.98, aim.x + step) };
+    else if (event.key === "ArrowUp") next = { ...aim, y: Math.max(0.02, aim.y - step) };
+    else if (event.key === "ArrowDown") next = { ...aim, y: Math.min(0.98, aim.y + step) };
+    else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      shoot(aim);
+      return;
+    } else return;
+    event.preventDefault();
+    setAim(next);
+  }
+
+  function startNextRound() {
+    if (!game) return;
+    setGame({ ...game, round: createRound(game.round.id + 1) });
+    setAim({ x: 0.5, y: 0.5 });
+    setNotice("Fresh target. The hotspot has moved—and changed shape.");
+  }
+
+  function refill() {
     if (!game) return;
     setGame({
       ...game,
-      balance: game.balance + 1000,
+      balance: game.balance + 500,
       stats: { ...game.stats, refills: game.stats.refills + 1 },
     });
-    setNotice("1,000 free demo credits added. They have no cash value.");
+    setNotice("500 free demo credits added. Nothing here has cash value.");
   }
 
   function resetDemo() {
-    if (!window.confirm("Reset the fake balance, insight, and all local stats?"))
-      return;
+    if (!window.confirm("Reset the local balance, round, and all range stats?")) return;
     window.localStorage.removeItem(STORAGE_KEY);
-    setGame(freshState());
-    setNotice("Fresh ledger. Four new secrets are behind the doors.");
+    setGame(createGame());
+    setAim({ x: 0.5, y: 0.5 });
+    setNotice("Clean slate. A new hidden field is waiting.");
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#game" aria-label="Fourtune Vaults home">
-          <span className="brand-mark">FV</span>
-          <span>
-            <strong>FOURTUNE</strong>
-            <small>VAULTS</small>
-          </span>
+        <a href="#range" className="wordmark" aria-label="Hotspot game home">
+          HOT<span>SPOT</span><sup>10</sup>
         </a>
-
-        <div className="demo-ribbon">DEMO CREDITS · NO CASH VALUE</div>
-
-        <div className="wallet" aria-label={`${game.balance} demo credits`}>
-          <span className="coin">¢</span>
+        <div className="demo-stamp">PLAY MONEY · LOCAL ONLY</div>
+        <div className="wallet">
           <span>
-            <small>LOCAL BALANCE</small>
+            <small>RANGE BALANCE</small>
             <strong>{formatCredits(game.balance)}</strong>
           </span>
-          <button type="button" onClick={refillWallet} title="Add 1,000 fake credits">
-            + REFILL
-          </button>
+          <button type="button" onClick={refill}>+500</button>
         </div>
       </header>
 
-      <section className="hero" id="game">
+      <section className="headline">
         <div>
-          <p className="eyebrow">SHIFT {String(game.run).padStart(2, "0")} · FOUR DOORS, ONE EMBER</p>
-          <h1>READ THE ROOMS.<br /><em>FIND THE RICH VAULT.</em></h1>
+          <p>ARCHERY / INFERENCE / PAYOUTS</p>
+          <h1>TEN ARROWS.<br /><em>ONE SECRET.</em></h1>
         </div>
-        <p className="hero-copy">
-          Every opening pays—or teaches. Test the vaults, read their patterns,
-          then press your best hunch before the shift ends.
+        <p className="intro">
+          The bullseye is a decoy. Somewhere on the board is one exact, high-return
+          point. Each payout is a noisy clue to its direction and distance.
         </p>
       </section>
 
-      <div className="progress-rail" aria-label={`${game.turn} of ${RUN_LENGTH} turns complete`}>
-        <span style={{ width: `${progress}%` }} />
-      </div>
-
-      <section className="game-layout">
-        <aside className="left-panel">
-          <div className="turn-counter">
-            <span className="big-number">{String(game.turn).padStart(2, "0")}</span>
-            <span>OF {RUN_LENGTH}<br />OPENINGS</span>
+      <section className="range-layout" id="range">
+        <aside className="brief-panel">
+          <div className="round-id">
+            <span>ROUND</span>
+            <strong>{String(round.id).padStart(2, "0")}</strong>
           </div>
 
-          <div className="run-ledger">
-            <p>THIS SHIFT</p>
-            <strong className={runNet >= 0 ? "positive" : "negative"}>
-              {runNet >= 0 ? "+" : ""}{formatCredits(runNet)}
-            </strong>
-            <small>demo credits net</small>
+          <div className="mission">
+            <span className="section-label">YOUR READ</span>
+            <h2>FIND THE HEAT BEFORE THE QUIVER RUNS DRY.</h2>
+            <ol>
+              <li><b>01</b><span>Click the target to fire.</span></li>
+              <li><b>02</b><span>Use payouts as evidence.</span></li>
+              <li><b>03</b><span>Exploit your warmest area.</span></li>
+            </ol>
           </div>
 
-          <div className="insight-block">
-            <span>INSIGHT</span>
-            <strong>{formatCredits(game.insight)}</strong>
-            <p>Prestige only. Earn it by finishing shifts and finding Ember.</p>
+          <div className="hidden-parameters">
+            <span className="section-label">ROUND PARAMETERS</span>
+            <p><span>BOARD AVG. RTP</span><b>99.00%</b></p>
+            <p><span>EXACT POINT X / Y</span><b>{round.finished ? `${(round.hotspot.x * 100).toFixed(1)} / ${(round.hotspot.y * 100).toFixed(1)}` : "██.█ / ██.█"}</b></p>
+            <p><span>PEAK MEAN RTP</span><b>{round.finished ? `${round.hotspot.peakRtp.toFixed(2)}×` : "█.██×"}</b></p>
+            <p><span>HOTSPOT STD. DEV.</span><b>{round.finished ? `${hotspotStdDev.toFixed(2)}×` : "█.██×"}</b></p>
+            <p><span>HOTSPOT VARIANCE</span><b>{round.finished ? `${hotspotVariance.toFixed(2)}×²` : "█.██×²"}</b></p>
           </div>
 
-          <div className="scan-block">
-            <div className="scan-heading">
-              <span>SCANS READY</span>
-              <strong>{game.scanTokens}</strong>
-            </div>
-            <p>Free clue, 72% accurate. New token every eight paid openings.</p>
-          </div>
-
-          <button className="text-button" type="button" onClick={() => setShowGuide(true)}>
-            HOW THE READ WORKS <span>↗</span>
+          <button type="button" className="rules-button" onClick={() => setShowRules(true)}>
+            HOW THE MATH WORKS <span>↗</span>
           </button>
         </aside>
 
-        <section className="vault-stage" aria-label="Choose a vault">
-          <div className="stage-header">
-            <div>
-              <span className="label">CURRENT READ</span>
-              <strong>{game.revealed ? "TEMPERAMENTS REVEALED" : `VAULT ${LETTERS[leader]} LEADS`}</strong>
-            </div>
-            <div className="stake-chip">
-              <span>FIXED STAKE</span>
-              <strong>{BET} CREDITS</strong>
-            </div>
+        <section className="target-stage">
+          <div className="stage-topline">
+            <span>{round.finished ? "EXACT POINT REVEALED" : "LIVE TARGET · CLICK TO FIRE"}</span>
+            <strong>{ARROW_STAKE} CREDITS / ARROW</strong>
           </div>
 
-          <div className="vault-grid">
-            {LETTERS.map((letter, index) => {
-              const plays = game.history.filter((play) => play.vault === index);
-              const latest = [...plays].at(-1);
-              const latestScan = game.scans.filter((scan) => scan.vault === index).at(-1);
-              const hunch = hunches[index];
-              const kind = vaultById[game.assignments[index]];
-              const isLeader = index === leader && !game.revealed;
-              const isRecent = lastPlay?.vault === index;
-              const guessed = game.guessVault === index;
+          <div className="target-wrap">
+            <button
+              type="button"
+              className={`target-board ${round.finished ? "is-revealed" : ""}`}
+              aria-label="Archery target. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
+              onPointerMove={handlePointerMove}
+              onPointerDown={handlePointerDown}
+              onKeyDown={handleTargetKey}
+              disabled={round.finished || game.balance < ARROW_STAKE}
+            >
+              <span className="ring-groove groove-one" />
+              <span className="ring-groove groove-two" />
+              <span className="ring-groove groove-three" />
 
-              return (
-                <article
-                  className={`vault-card ${isLeader ? "leader" : ""} ${isRecent ? "recent" : ""} ${game.revealed ? `revealed ${kind.id}` : ""}`}
-                  key={letter}
+              {round.finished && (
+                <span
+                  className="hotspot-point"
+                  style={{
+                    left: `${round.hotspot.x * 100}%`,
+                    top: `${round.hotspot.y * 100}%`,
+                  }}
+                ><i /><b>EXACT HOTSPOT</b></span>
+              )}
+
+              {round.shots.map((shot) => (
+                <span
+                  className={`arrow-mark ${multiplierClass(shot.multiplier)} ${closestShot?.id === shot.id && round.finished ? "closest" : ""}`}
+                  key={shot.id}
+                  style={{ left: `${shot.x * 100}%`, top: `${shot.y * 100}%`, "--angle": `${18 + shot.number * 19}deg` } as CSSProperties}
                 >
-                  <div className="vault-meta">
-                    <span>VAULT {letter}</span>
-                    <span>{plays.length} READ{plays.length === 1 ? "" : "S"}</span>
-                  </div>
+                  <i />
+                  <b>{shot.number}</b>
+                  <em>{shot.multiplier.toFixed(2)}×</em>
+                </span>
+              ))}
 
-                  <div className="door-wrap" aria-hidden="true">
-                    <div className="vault-door">
-                      <span className="door-tick tick-one" />
-                      <span className="door-tick tick-two" />
-                      <span className="door-tick tick-three" />
-                      <span className="door-letter">{game.revealed ? kind.symbol : letter}</span>
-                      <span className="door-handle" />
-                    </div>
-                    {latest && (
-                      <span className={`last-result outcome-${latest.outcome}`}>
-                        {latest.outcome === 0 ? "MISS" : `${latest.outcome}×`}
-                      </span>
-                    )}
-                  </div>
+              {!round.finished && (
+                <span className="aim-reticle" style={{ left: `${aim.x * 100}%`, top: `${aim.y * 100}%` }}>
+                  <i />
+                </span>
+              )}
+            </button>
 
-                  {game.revealed ? (
-                    <div className="reveal-copy">
-                      <span>{guessed ? "YOUR CALL" : "TEMPERAMENT"}</span>
-                      <strong>{kind.name}</strong>
-                      <small>{(kind.rtp * 100).toFixed(1)}% RTP · {kind.subtitle}</small>
-                    </div>
-                  ) : (
-                    <div className="hunch">
-                      <div>
-                        <span>EMBER HUNCH</span>
-                        <strong>{Math.round(hunch.bestChance * 100)}%</strong>
-                      </div>
-                      <div className="hunch-bar"><span style={{ width: `${Math.max(3, hunch.bestChance * 100)}%` }} /></div>
-                      <small>
-                        {latestScan ? `LAST SCAN: ${vaultById[latestScan.clue].name.toUpperCase()} · ` : ""}
-                        Est. return {(hunch.expectedRtp * 100).toFixed(2)}%
-                      </small>
-                    </div>
-                  )}
+            <span className="target-caption caption-left">NOT TO SCALE</span>
+            <span className="target-caption caption-right">RANGE 07</span>
+          </div>
 
-                  <div className="vault-actions">
-                    <button
-                      className="open-button"
-                      type="button"
-                      onClick={() => openVault(index)}
-                      disabled={completed || game.revealed || game.balance < BET}
-                      aria-label={`Open Vault ${letter} for ${BET} demo credits`}
-                    >
-                      OPEN <span>−{BET}</span>
-                    </button>
-                    <button
-                      className="scan-button"
-                      type="button"
-                      onClick={() => scanVault(index)}
-                      disabled={game.scanTokens < 1 || game.revealed}
-                      aria-label={`Scan Vault ${letter}`}
-                    >
-                      ◉ SCAN
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+          <div className="quiver-row" aria-label={`${arrowsLeft} arrows remaining`}>
+            <div>
+              <span className="section-label">QUIVER</span>
+              <strong>{arrowsLeft} LEFT</strong>
+            </div>
+            <div className="arrow-slots">
+              {Array.from({ length: QUIVER_SIZE }, (_, index) => (
+                <span className={index < round.shots.length ? "spent" : "ready"} key={index}>➶</span>
+              ))}
+            </div>
           </div>
 
           <div className="notice" aria-live="polite">
-            <span className="signal-dot" />
+            <span className="pulse" />
             <p>{notice}</p>
-            <span className="notice-count">{RUN_LENGTH - game.turn} LEFT</span>
+            {bestShot && <strong>BEST CLUE {bestShot.multiplier.toFixed(2)}×</strong>}
           </div>
         </section>
 
-        <aside className="right-panel">
-          <div className="panel-heading">
-            <span>READ LOG</span>
+        <aside className="ledger-panel">
+          <div className="ledger-title">
+            <span>SHOT LEDGER</span>
             <button
               type="button"
-              className="sound-button"
               onClick={() => setGame({ ...game, sound: !game.sound })}
               aria-label={game.sound ? "Mute sound" : "Enable sound"}
             >
@@ -578,105 +526,94 @@ export default function Home() {
             </button>
           </div>
 
-          <div className="history-list">
-            {game.history.length === 0 ? (
-              <div className="empty-log">
-                <span>∅</span>
-                <p>No reads yet.<br />The vaults are waiting.</p>
+          <div className="round-return">
+            <span>ROUND NET</span>
+            <strong className={roundNet >= 0 ? "positive" : "negative"}>
+              {roundNet >= 0 ? "+" : ""}{formatCredits(roundNet)}
+            </strong>
+            <small>demo credits</small>
+          </div>
+
+          <div className="shot-list">
+            {round.shots.length === 0 ? (
+              <div className="empty-ledger">
+                <span>➶</span>
+                <p>Your ten observations<br />will appear here.</p>
               </div>
             ) : (
-              [...game.history].reverse().slice(0, 9).map((play) => (
-                <div className="history-row" key={play.id}>
-                  <span>{String(play.turn).padStart(2, "0")}</span>
-                  <strong>VAULT {LETTERS[play.vault]}</strong>
-                  <b className={play.net > 0 ? "win" : play.net === 0 ? "push" : "loss"}>
-                    {play.outcome === 0 ? "MISS" : `${play.outcome}×`}
-                  </b>
-                  <small>{play.net > 0 ? "+" : ""}{play.net}</small>
+              round.shots.map((shot) => (
+                <div className="shot-row" key={shot.id}>
+                  <span className={`shot-number ${multiplierClass(shot.multiplier)}`}>{shot.number}</span>
+                  <div>
+                    <strong>{shot.multiplier.toFixed(2)}× PAID</strong>
+                    <small>{round.finished ? `${shot.meanRtp.toFixed(2)}× local mean` : shot.multiplier >= 1 ? "warm signal" : "cold signal"}</small>
+                  </div>
+                  <b className={shot.net >= 0 ? "positive" : "negative"}>{shot.net >= 0 ? "+" : ""}{shot.net}</b>
                 </div>
               ))
             )}
           </div>
 
-          <div className="lifetime-stats">
-            <span>LIFETIME / THIS DEVICE</span>
-            <div><small>Shifts read</small><strong>{game.stats.runs}</strong></div>
-            <div><small>Embers found</small><strong>{game.stats.correctGuesses}</strong></div>
-            <div><small>Biggest return</small><strong>{game.stats.biggestWin}</strong></div>
-          </div>
-
-          <details className="math-drawer">
-            <summary>THE FOUR TEMPERAMENTS <span>+</span></summary>
-            <div>
-              {VAULTS.map((vault) => (
-                <p key={vault.id}>
-                  <b>{vault.symbol} {vault.name}</b>
-                  <span>{(vault.rtp * 100).toFixed(1)}% RTP</span>
-                </p>
-              ))}
-              <small>Random choice averages 97.25% RTP. Even perfect knowledge tops out at 99.5%.</small>
+          {round.finished ? (
+            <div className="reveal-card">
+              <span>POINT REVEALED · {qualityLabel(round.hotspot.peakRtp)} / {varianceLabel(round.hotspot.payoutNoise)} VARIANCE</span>
+              <h3>{closestShot ? `ARROW ${closestShot.number} WAS CLOSEST.` : "FIELD REVEALED."}</h3>
+              <p>
+                It landed {closestShot ? (closestShot.distance * 200).toFixed(1) : "0"}% of a target radius from the exact point.
+              </p>
+              <div className="reveal-stats">
+                <div><small>HOTSPOT QUALITY</small><strong>{round.hotspot.peakRtp.toFixed(2)}×</strong><em>{qualityLabel(round.hotspot.peakRtp)} PEAK MEAN</em></div>
+                <div><small>BOARD AVG. RTP</small><strong>99.0%</strong><em>AREA-NORMALIZED</em></div>
+                <div><small>PAYOUT STD. DEV.</small><strong>±{hotspotStdDev.toFixed(2)}×</strong><em>{Math.round(round.hotspot.payoutNoise * 100)}% OF MEAN</em></div>
+                <div><small>PAYOUT VARIANCE</small><strong>{hotspotVariance.toFixed(2)}×²</strong><em>{varianceLabel(round.hotspot.payoutNoise)} VOLATILITY</em></div>
+                <div><small>OFF-HOTSPOT FLOOR</small><strong>{round.hotspot.baseRtp.toFixed(2)}×</strong><em>SOLVED THIS ROUND</em></div>
+                <div><small>REALIZED RTP</small><strong>{(realizedRtp * 100).toFixed(0)}%</strong><em>THIS QUIVER</em></div>
+              </div>
+              <button type="button" onClick={startNextRound}>STRING A NEW QUIVER →</button>
             </div>
+          ) : (
+            <div className="live-tip">
+              <span>RANGE NOTE</span>
+              <p>A single hot payout may be noise. Cluster evidence before you commit the remaining arrows.</p>
+            </div>
+          )}
+
+          <details className="lifetime">
+            <summary>LIFETIME / THIS DEVICE <span>+</span></summary>
+            <div><small>Rounds</small><strong>{game.stats.rounds}</strong></div>
+            <div><small>Arrows fired</small><strong>{game.stats.arrows}</strong></div>
+            <div><small>Best payout</small><strong>{game.stats.bestMultiplier.toFixed(2)}×</strong></div>
+            <div><small>Net credits</small><strong className={lifetimeNet >= 0 ? "positive" : "negative"}>{lifetimeNet >= 0 ? "+" : ""}{formatCredits(lifetimeNet)}</strong></div>
           </details>
 
-          <button type="button" className="reset-button" onClick={resetDemo}>
-            RESET LOCAL DEMO
-          </button>
+          <button type="button" className="reset-button" onClick={resetDemo}>RESET LOCAL DEMO</button>
         </aside>
       </section>
 
       <footer>
-        <p>PLAY MONEY PROTOTYPE · RESULTS GENERATED AND STORED ON THIS DEVICE</p>
-        <p>RTP IS THEORETICAL OVER MANY PLAYS · THIS DEMO CANNOT PAY OR ACCEPT MONEY</p>
+        <p>PLAY-MONEY PROTOTYPE · NO DEPOSITS · NO WITHDRAWALS · NO CASH VALUE</p>
+        <p>EVERY BOARD IS AREA-NORMALIZED TO 99% RTP · PLAYER CHOICES CAN RUN ABOVE OR BELOW IT</p>
       </footer>
 
-      {completed && !game.revealed && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="final-title">
-          <div className="final-call">
-            <span className="modal-kicker">THE FINAL CALL</span>
-            <h2 id="final-title">WHERE IS EMBER?</h2>
-            <p>Forty reads are in the ledger. Name the richest vault to bank 250 insight.</p>
-            <div className="final-options">
-              {LETTERS.map((letter, index) => (
-                <button type="button" key={letter} onClick={() => makeFinalCall(index)}>
-                  <small>VAULT</small><strong>{letter}</strong>
-                  <span>{Math.round(hunches[index].bestChance * 100)}% HUNCH</span>
-                </button>
-              ))}
+      {showRules && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="math-title">
+          <div className="math-modal">
+            <button type="button" className="modal-close" onClick={() => setShowRules(false)} aria-label="Close">×</button>
+            <span className="modal-kicker">THE HIDDEN FIELD</span>
+            <h2 id="math-title">CLOSER MEANS HOTTER.<br />NOT CERTAIN.</h2>
+            <p>Every round secretly samples one exact point <i>c</i>, a peak mean RTP <i>P</i>, and payout-noise standard deviation <i>v</i>. The off-hotspot floor <i>B</i> is then solved so a uniformly random point on the board averages 0.99×.</p>
+            <div className="formula">
+              <small>EXPECTED PAYOUT AT DISTANCE d</small>
+              <strong>μ(d) = B + (P − B)e<sup>−d² / 2(0.14)²</sup></strong>
             </div>
-          </div>
-        </div>
-      )}
-
-      {game.revealed && (
-        <div className="result-strip" role="status">
-          <div>
-            <span>SHIFT {String(game.run).padStart(2, "0")} CLOSED</span>
-            <strong>{game.assignments[game.guessVault ?? 0] === "ember" ? "EMBER FOUND" : "THE VAULTS WIN THIS READ"}</strong>
-          </div>
-          <p>Net {runNet >= 0 ? "+" : ""}{runNet} credits · {game.assignments.map((kind, index) => `${LETTERS[index]}: ${vaultById[kind].name}`).join("  /  ")}</p>
-          <button type="button" onClick={() => { setGame(freshState(game)); setNotice("New shift. New secrets. Trust the evidence."); }}>
-            START NEXT SHIFT →
-          </button>
-        </div>
-      )}
-
-      {showGuide && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="guide-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowGuide(false); }}>
-          <div className="guide-modal">
-            <button className="modal-close" type="button" onClick={() => setShowGuide(false)} aria-label="Close guide">×</button>
-            <span className="modal-kicker">FIELD MANUAL / 01</span>
-            <h2 id="guide-title">EVERY OPENING IS EVIDENCE.</h2>
-            <ol>
-              <li><b>Explore.</b><span>Open different vaults to learn their payout personalities.</span></li>
-              <li><b>Read.</b><span>The Ember hunch uses every result and scan to update the odds.</span></li>
-              <li><b>Exploit.</b><span>Favor your leading vault—but leave room for a surprising clue.</span></li>
-              <li><b>Call it.</b><span>After 40 openings, identify Ember for 250 prestige insight.</span></li>
-            </ol>
-            <div className="guide-note">
-              <strong>GENTLE BY DESIGN</strong>
-              <p>The weakest temperament returns 95% in theory; the best returns 99.5%. Strategy matters, but a bad read is not brutally expensive.</p>
+            <div className="parameter-grid">
+              <div><span>PEAK P</span><strong>2.40–4.40×</strong><p>The secret center is deliberately rich.</p></div>
+              <div><span>EXACT POINT c</span><strong>ONE LOCATION</strong><p>The reveal marks a coordinate, not an area.</p></div>
+              <div><span>NOISE SD v</span><strong>16–55%</strong><p>Randomized independently each round.</p></div>
+              <div><span>BOARD AVERAGE</span><strong>0.99×</strong><p>The spatial average is normalized every round.</p></div>
             </div>
-            <button className="primary-guide-button" type="button" onClick={() => setShowGuide(false)}>BACK TO THE VAULTS</button>
+            <p className="math-note">If K is the board-average Gaussian weight, B = (0.99 − PK) / (1 − K). At the hotspot, payout SD = Pv and variance = (Pv)². The noise multiplier has mean 1, so E[payout | location] = μ(d).</p>
+            <button type="button" className="close-primary" onClick={() => setShowRules(false)}>BACK TO THE RANGE</button>
           </div>
         </div>
       )}
