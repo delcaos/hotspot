@@ -418,6 +418,8 @@ export default function Home() {
   );
   const capturedShot = round.shots.find((shot) => shot.result === "hit") ?? null;
   const usedPointIds = new Set(round.shots.map((shot) => shot.id));
+  const openPoints = SEARCH_POINTS.filter((point) => !usedPointIds.has(point.id));
+  const openSlotCount = openPoints.length;
   const currentEntropy = posteriorEntropy(round.posterior);
   const openingEntropy = Math.log2(SEARCH_POINTS.length);
   const informationGain = openingEntropy - currentEntropy;
@@ -440,6 +442,18 @@ export default function Home() {
     openingPosterior,
     round.hotspot.profile,
   );
+  const bestOpenPoint = openPoints.reduce<SearchPoint | null>((best, point) => {
+    if (!best || round.posterior[point.id] > round.posterior[best.id]) return point;
+    return best;
+  }, null);
+
+  function aimBestOpenPoint() {
+    if (!bestOpenPoint || round.finished) return;
+    setAim({ x: bestOpenPoint.x, y: bestOpenPoint.y });
+    setNotice(
+      `Highest-probability open pin selected: ${(round.posterior[bestOpenPoint.id] * 100).toFixed(2)}%. Click the target or press Enter to fire.`,
+    );
+  }
 
   function shoot(point: Point) {
     if (!game || game.round.finished || game.balance < ARROW_STAKE) return;
@@ -635,7 +649,7 @@ export default function Home() {
             <ol>
               <li><b>01</b><span>Fire at any search pin.</span></li>
               <li><b>02</b><span>The exact payout updates all 217 probabilities.</span></li>
-              <li><b>03</b><span>Bright, enlarged pins are the Bayesian leaders.</span></li>
+              <li><b>03</b><span>Acid-ringed open pins float above every arrow.</span></li>
             </ol>
           </div>
 
@@ -688,8 +702,8 @@ export default function Home() {
                     style={{
                       left: `${point.x * 100}%`,
                       top: `${point.y * 100}%`,
-                      opacity: used ? 1 : 0.16 + 0.84 * Math.sqrt(relativeProbability),
-                      transform: `translate(-50%,-50%) scale(${aimed ? 1.8 : used ? 1 : 0.62 + 0.88 * Math.sqrt(relativeProbability)})`,
+                      opacity: used ? 1 : 0.68 + 0.32 * Math.sqrt(relativeProbability),
+                      transform: `translate(-50%,-50%) scale(${aimed ? 1.8 : used ? 1 : 0.88 + 0.62 * Math.sqrt(relativeProbability)})`,
                     }}
                   />
                 );
@@ -716,26 +730,37 @@ export default function Home() {
                 </>
               )}
 
-              {round.shots.map((shot) => (
-                <span
-                  className={`arrow-mark ${shot.result}`}
-                  key={shot.key}
-                  style={{
-                    left: `calc(${shot.x * 100}% + ${Math.cos(shot.number * 2.4) * (2 + shot.number % 4)}px)`,
-                    top: `calc(${shot.y * 100}% + ${Math.sin(shot.number * 2.4) * (2 + shot.number % 4)}px)`,
-                    "--angle": `${18 + (shot.number % 12) * 19}deg`,
-                  } as CSSProperties}
-                >
-                  <i /><b>{shot.number}</b><em>{shot.multiplier.toFixed(2)}×</em>
-                </span>
-              ))}
+              {round.shots.map((shot) => {
+                const showPayoutLabel = round.finished || shot.number > round.shots.length - 6;
+                return (
+                  <span
+                    aria-label={`Arrow ${shot.number}, ${shot.multiplier.toFixed(2)} multiplier`}
+                    className={`arrow-mark ${shot.result}`}
+                    key={shot.key}
+                    style={{
+                      left: `calc(${shot.x * 100}% + ${Math.cos(shot.number * 2.4) * (2 + shot.number % 4)}px)`,
+                      top: `calc(${shot.y * 100}% + ${Math.sin(shot.number * 2.4) * (2 + shot.number % 4)}px)`,
+                      "--angle": `${18 + (shot.number % 12) * 19}deg`,
+                    } as CSSProperties}
+                  >
+                    <i /><b>{shot.number}</b>{showPayoutLabel && <em>{shot.multiplier.toFixed(2)}×</em>}
+                  </span>
+                );
+              })}
 
               {!round.finished && (
                 <span className="aim-reticle" style={{ left: `${aimPoint.x * 100}%`, top: `${aimPoint.y * 100}%` }}><i /></span>
               )}
             </button>
-            <span className="target-caption caption-left">217-PIN POSTERIOR FIELD</span>
+            <span className="target-caption caption-left">{openSlotCount} OPEN / 217 TOTAL</span>
             <span className="target-caption caption-right">RANGE 07</span>
+          </div>
+
+          <div className="open-slot-helper">
+            <span><b>{openSlotCount}</b> OPEN PINS FLOAT ABOVE ARROWS</span>
+            <button type="button" onClick={aimBestOpenPoint} disabled={round.finished || !bestOpenPoint}>
+              AIM BEST OPEN PIN <i>→</i>
+            </button>
           </div>
 
           <div className="search-row" aria-label={`Posterior leader ${(topProbability * 100).toFixed(2)} percent with ${currentEntropy.toFixed(2)} bits of entropy`}>

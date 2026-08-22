@@ -59,4 +59,7 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.match(source, /updatePosterior/);
   assert.doesNotMatch(source, /round\.shots\.slice/);
   assert.match(source, /if \(usedPointIds\.has\(selected\.id\)\)/);
+  assert.match(source, /AIM BEST OPEN PIN/);
+  assert.match(source, /OPEN PINS FLOAT ABOVE ARROWS/);
+  assert.match(source, /round\.shots\.length - 6/);
 });

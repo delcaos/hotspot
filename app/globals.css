@@ -175,12 +175,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .groove-two { inset: 37%; }
 .groove-three { inset: 47%; }
 
-.search-pin { position: absolute; z-index: 4; width: 6px; height: 6px; border: 1px solid var(--paper); border-radius: 50%; background: var(--ink); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(27,27,23,.55); pointer-events: none; transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; }
-.search-pin.possible { opacity: .78; }
-.search-pin.likely { background: var(--acid); box-shadow: 0 0 0 1px var(--ink), 0 0 8px rgba(215,239,53,.9); }
+.search-pin { position: absolute; z-index: 4; width: 9px; height: 9px; border: 1px solid var(--paper); border-radius: 50%; background: var(--ink); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(27,27,23,.55); pointer-events: none; transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; }
+.search-pin:not(.used) { z-index: 12; border: 2px solid var(--ink); background: var(--acid); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px rgba(27,27,23,.9), 0 0 8px rgba(215,239,53,.7); }
+.search-pin.possible { opacity: .88; }
+.search-pin.likely:not(.used) { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink), 0 0 13px 4px rgba(215,239,53,.95); }
 .search-pin.eliminated { opacity: .16; transform: translate(-50%,-50%) scale(.62); }
-.search-pin.used { opacity: 1; background: var(--red); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink); }
-.search-pin.aimed { opacity: 1; transform: translate(-50%,-50%) scale(1.8); background: var(--acid); box-shadow: 0 0 0 2px var(--ink), 0 0 0 5px rgba(215,239,53,.44); }
+.search-pin.used { z-index: 4; opacity: 1; background: var(--red); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink); }
+.search-pin.aimed:not(.used) { z-index: 13; opacity: 1; transform: translate(-50%,-50%) scale(1.8); background: white; box-shadow: 0 0 0 2px var(--acid), 0 0 0 5px var(--ink), 0 0 16px 7px rgba(215,239,53,.88); }
 
 .aim-reticle { position: absolute; z-index: 10; width: 28px; height: 28px; border: 1px solid var(--acid); border-radius: 50%; transform: translate(-50%,-50%); pointer-events: none; filter: drop-shadow(0 0 2px var(--ink)); }
 .aim-reticle::before, .aim-reticle::after { position: absolute; content: ""; background: var(--acid); }
@@ -218,6 +219,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .target-caption { position: absolute; z-index: 2; bottom: 2px; padding: 2px 5px; background: var(--paper); font-size: 7px; font-weight: 900; letter-spacing: .12em; }
 .caption-left { left: 10%; }
 .caption-right { right: 10%; }
+
+.open-slot-helper { width: 100%; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--ink); }
+.open-slot-helper > span { font-size: 8px; font-weight: 900; letter-spacing: .1em; }
+.open-slot-helper > span b { color: var(--red); font-family: Georgia, serif; font-size: 15px; font-weight: 400; }
+.open-slot-helper button { padding: 6px 8px; border: 1px solid var(--ink); background: var(--acid); box-shadow: 2px 2px 0 var(--ink); color: var(--ink); cursor: pointer; font-size: 8px; font-weight: 900; letter-spacing: .09em; }
+.open-slot-helper button:hover { background: var(--ink); color: var(--acid); }
+.open-slot-helper button:focus-visible { outline: 3px solid var(--red); outline-offset: 2px; }
+.open-slot-helper button:disabled { opacity: .45; box-shadow: none; cursor: default; }
+.open-slot-helper button i { font-style: normal; font-size: 12px; }
 
 .search-row { width: 100%; min-height: 58px; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
 .search-row > div { padding: 9px 12px; display: grid; align-content: center; border-left: 1px solid var(--line); }
@@ -351,6 +361,9 @@ footer { width: min(1560px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 
   .arrow-mark > em { font-size: 7px; }
   .jackpot-impact { top: 4%; min-width: 178px; padding: 6px 10px 8px; }
   .jackpot-impact strong { font-size: 36px; }
+  .open-slot-helper { min-height: 44px; }
+  .open-slot-helper > span { max-width: 135px; line-height: 1.35; }
+  .open-slot-helper button { max-width: 130px; line-height: 1.2; }
   .search-row { grid-template-columns: 1fr 1fr; }
   .search-row > div { padding: 8px; }
   .search-row > div:nth-child(n+3) { border-top: 1px solid var(--line); }
