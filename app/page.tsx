@@ -598,6 +598,15 @@ export default function Home() {
     setNotice("Fresh target. The hotspot and randomized Gaussian signal field have both moved.");
   }
 
+  function resetRound() {
+    if (
+      !round.finished &&
+      round.shots.length > 0 &&
+      !window.confirm("Abandon this hunt and clear every arrow? Spent credits and lifetime stats will stay.")
+    ) return;
+    startNextRound();
+  }
+
   function refill() {
     setGame({
       ...game,
@@ -758,9 +767,14 @@ export default function Home() {
 
           <div className="open-slot-helper">
             <span><b>{openSlotCount}</b> OPEN PINS FLOAT ABOVE ARROWS</span>
-            <button type="button" onClick={aimBestOpenPoint} disabled={round.finished || !bestOpenPoint}>
-              AIM BEST OPEN PIN <i>→</i>
-            </button>
+            <div className="round-controls">
+              <button type="button" className="reset-round-control" onClick={resetRound}>
+                RESET ROUND <i>↻</i>
+              </button>
+              <button type="button" onClick={aimBestOpenPoint} disabled={round.finished || !bestOpenPoint}>
+                AIM BEST OPEN PIN <i>→</i>
+              </button>
+            </div>
           </div>
 
           <div className="search-row" aria-label={`Posterior leader ${(topProbability * 100).toFixed(2)} percent with ${currentEntropy.toFixed(2)} bits of entropy`}>

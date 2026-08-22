@@ -62,4 +62,6 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.match(source, /AIM BEST OPEN PIN/);
   assert.match(source, /OPEN PINS FLOAT ABOVE ARROWS/);
   assert.match(source, /round\.shots\.length - 6/);
+  assert.match(source, /RESET ROUND/);
+  assert.match(source, /function resetRound\(\)/);
 });

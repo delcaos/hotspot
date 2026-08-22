@@ -223,11 +223,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .open-slot-helper { width: 100%; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--ink); }
 .open-slot-helper > span { font-size: 8px; font-weight: 900; letter-spacing: .1em; }
 .open-slot-helper > span b { color: var(--red); font-family: Georgia, serif; font-size: 15px; font-weight: 400; }
+.round-controls { display: flex; gap: 7px; }
 .open-slot-helper button { padding: 6px 8px; border: 1px solid var(--ink); background: var(--acid); box-shadow: 2px 2px 0 var(--ink); color: var(--ink); cursor: pointer; font-size: 8px; font-weight: 900; letter-spacing: .09em; }
 .open-slot-helper button:hover { background: var(--ink); color: var(--acid); }
 .open-slot-helper button:focus-visible { outline: 3px solid var(--red); outline-offset: 2px; }
 .open-slot-helper button:disabled { opacity: .45; box-shadow: none; cursor: default; }
 .open-slot-helper button i { font-style: normal; font-size: 12px; }
+.open-slot-helper .reset-round-control { background: var(--paper); color: var(--red); }
+.open-slot-helper .reset-round-control:hover { background: var(--red); color: white; }
 
 .search-row { width: 100%; min-height: 58px; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
 .search-row > div { padding: 9px 12px; display: grid; align-content: center; border-left: 1px solid var(--line); }
@@ -363,7 +366,8 @@ footer { width: min(1560px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 
   .jackpot-impact strong { font-size: 36px; }
   .open-slot-helper { min-height: 44px; }
   .open-slot-helper > span { max-width: 135px; line-height: 1.35; }
-  .open-slot-helper button { max-width: 130px; line-height: 1.2; }
+  .round-controls { align-items: stretch; }
+  .open-slot-helper button { max-width: 105px; padding: 6px; line-height: 1.2; }
   .search-row { grid-template-columns: 1fr 1fr; }
   .search-row > div { padding: 8px; }
   .search-row > div:nth-child(n+3) { border-top: 1px solid var(--line); }
