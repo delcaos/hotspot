@@ -3,46 +3,52 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
-const STORAGE_KEY = "hotspot-archery-state-v3";
+const STORAGE_KEY = "hotspot-archery-state-v4";
 const LEGACY_STORAGE_KEYS = [
   "fourtune-vaults-state-v1",
   "hotspot-archery-state-v1",
   "hotspot-archery-state-v2",
+  "hotspot-archery-state-v3",
 ];
 const ARROW_STAKE = 10;
-const QUIVER_SIZE = 10;
-const TARGET_BOARD_RTP = 0.99;
-const FALLOFF_SIGMA = 0.14;
+const TARGET_RTP = 0.99;
+const REPEAT_PAYOUT = 0.96;
 const TARGET_RADIUS = 0.495;
 
 type Point = { x: number; y: number };
+type SearchPoint = Point & { id: number };
+type HeatBand = "cold" | "cool" | "warm" | "near";
 
-type Hotspot = Point & {
-  peakRtp: number;
-  payoutNoise: number;
-  baseRtp: number;
-  kernelMean: number;
+type RewardProfile = Record<HeatBand, number>;
+
+type Hotspot = {
+  pointId: number;
+  profile: RewardProfile;
 };
 
-type Shot = Point & {
-  id: number;
+type Shot = SearchPoint & {
+  key: number;
   number: number;
-  meanRtp: number;
   multiplier: number;
   returned: number;
   net: number;
   distance: number;
+  result: HeatBand | "hit" | "repeat";
+  possibleBefore: number;
+  possibleAfter: number;
+  rewardOnAim: number;
 };
 
 type Round = {
   id: number;
   hotspot: Hotspot;
+  possibleIds: number[];
   shots: Shot[];
   finished: boolean;
 };
 
 type GameState = {
-  version: 3;
+  version: 4;
   balance: number;
   round: Round;
   sound: boolean;
@@ -52,9 +58,33 @@ type GameState = {
     wagered: number;
     returned: number;
     bestMultiplier: number;
+    bestFind: number | null;
     refills: number;
   };
 };
+
+function buildSearchPoints() {
+  const points: SearchPoint[] = [];
+  const radius = 3;
+  const spacing = 0.125;
+
+  for (let q = -radius; q <= radius; q += 1) {
+    const minR = Math.max(-radius, -q - radius);
+    const maxR = Math.min(radius, -q + radius);
+    for (let r = minR; r <= maxR; r += 1) {
+      points.push({
+        id: points.length,
+        x: 0.5 + spacing * (q + r / 2),
+        y: 0.5 + spacing * r * (Math.sqrt(3) / 2),
+      });
+    }
+  }
+
+  return points;
+}
+
+const SEARCH_POINTS = buildSearchPoints();
+const ALL_POINT_IDS = SEARCH_POINTS.map((point) => point.id);
 
 function randomUnit() {
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
@@ -69,53 +99,78 @@ function randomBetween(min: number, max: number) {
   return min + randomUnit() * (max - min);
 }
 
-function estimateKernelMean(point: Point) {
-  const gridSize = 121;
-  let total = 0;
-  let samples = 0;
-
-  for (let row = 0; row < gridSize; row += 1) {
-    const y = (row + 0.5) / gridSize;
-    for (let column = 0; column < gridSize; column += 1) {
-      const x = (column + 0.5) / gridSize;
-      if (distance({ x, y }, { x: 0.5, y: 0.5 }) > TARGET_RADIUS) continue;
-      const distanceSquared = (x - point.x) ** 2 + (y - point.y) ** 2;
-      total += Math.exp(-distanceSquared / (2 * FALLOFF_SIGMA ** 2));
-      samples += 1;
-    }
-  }
-
-  return total / samples;
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
-function createHotspot(): Hotspot {
-  const angle = randomUnit() * Math.PI * 2;
-  const radius = Math.sqrt(randomUnit()) * 0.3;
-  const point = {
-    x: 0.5 + Math.cos(angle) * radius,
-    y: 0.5 + Math.sin(angle) * radius,
-  };
-  const peakRtp = randomBetween(2.4, 4.4);
-  const kernelMean = estimateKernelMean(point);
-  const baseRtp =
-    (TARGET_BOARD_RTP - peakRtp * kernelMean) / (1 - kernelMean);
+function createRewardProfile(): RewardProfile {
+  const cold = round2(randomBetween(0.78, 0.83));
+  const cool = round2(cold + randomBetween(0.05, 0.07));
+  const warm = round2(cool + randomBetween(0.04, 0.05));
+  const near = Math.min(0.99, round2(warm + randomBetween(0.025, 0.035)));
+  return { cold, cool, warm, near };
+}
 
-  return {
-    ...point,
-    peakRtp,
-    payoutNoise: randomBetween(0.16, 0.55),
-    baseRtp,
-    kernelMean,
-  };
+function pointById(id: number) {
+  return SEARCH_POINTS[id];
+}
+
+function distance(a: Point, b: Point) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function nearestSearchPoint(point: Point) {
+  return SEARCH_POINTS.reduce((nearest, candidate) =>
+    distance(point, candidate) < distance(point, nearest) ? candidate : nearest,
+  );
+}
+
+function heatBandBetween(a: SearchPoint, b: SearchPoint): HeatBand {
+  const separation = distance(a, b);
+  if (separation <= 0.145) return "near";
+  if (separation <= 0.24) return "warm";
+  if (separation <= 0.36) return "cool";
+  return "cold";
+}
+
+function missMultiplier(
+  aimedPointId: number,
+  hotspotPointId: number,
+  profile: RewardProfile,
+) {
+  const band = heatBandBetween(pointById(aimedPointId), pointById(hotspotPointId));
+  return { band, multiplier: profile[band] };
+}
+
+function captureReward(
+  aimedPointId: number,
+  possibleIds: number[],
+  profile: RewardProfile,
+) {
+  if (!possibleIds.includes(aimedPointId)) return REPEAT_PAYOUT;
+  const missTotal = possibleIds.reduce((total, possibleId) => {
+    if (possibleId === aimedPointId) return total;
+    return total + missMultiplier(aimedPointId, possibleId, profile).multiplier;
+  }, 0);
+  return round2(TARGET_RTP * possibleIds.length - missTotal);
 }
 
 function createRound(id: number): Round {
-  return { id, hotspot: createHotspot(), shots: [], finished: false };
+  return {
+    id,
+    hotspot: {
+      pointId: Math.floor(randomUnit() * SEARCH_POINTS.length),
+      profile: createRewardProfile(),
+    },
+    possibleIds: [...ALL_POINT_IDS],
+    shots: [],
+    finished: false,
+  };
 }
 
 function createGame(): GameState {
   return {
-    version: 3,
+    version: 4,
     balance: 500,
     round: createRound(1),
     sound: true,
@@ -125,73 +180,68 @@ function createGame(): GameState {
       wagered: 0,
       returned: 0,
       bestMultiplier: 0,
+      bestFind: null,
       refills: 0,
     },
   };
 }
 
-function localMeanRtp(point: Point, hotspot: Hotspot) {
-  const distanceSquared =
-    (point.x - hotspot.x) ** 2 + (point.y - hotspot.y) ** 2;
-  return (
-    hotspot.baseRtp +
-    (hotspot.peakRtp - hotspot.baseRtp) *
-      Math.exp(-distanceSquared / (2 * FALLOFF_SIGMA ** 2))
-  );
-}
-
-function samplePayout(meanRtp: number, payoutNoise: number) {
-  const meanOneNoise =
-    1 + payoutNoise * Math.sqrt(3) * (2 * randomUnit() - 1);
-  return Math.max(0, Math.round(meanRtp * meanOneNoise * 20) / 20);
-}
-
-function distance(a: Point, b: Point) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
 function formatCredits(value: number) {
-  return Math.round(value).toLocaleString("en-US");
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 1,
+    maximumFractionDigits: 1,
+  });
 }
 
-function multiplierClass(multiplier: number) {
-  if (multiplier >= 2) return "scorching";
-  if (multiplier >= 1) return "warm";
-  if (multiplier >= 0.65) return "cool";
-  return "cold";
+function resultLabel(result: Shot["result"]) {
+  if (result === "hit") return "HOTSPOT";
+  if (result === "repeat") return "NO NEW READ";
+  return `${result.toUpperCase()} READ`;
 }
 
-function qualityLabel(peakRtp: number) {
-  if (peakRtp >= 4) return "ELITE";
-  if (peakRtp >= 3.4) return "VERY RICH";
-  if (peakRtp >= 2.9) return "RICH";
-  return "GOOD";
+function rewardQuality(multiplier: number) {
+  if (multiplier >= 6) return "ELITE";
+  if (multiplier >= 4.5) return "RICH";
+  if (multiplier >= 3) return "SOLID";
+  return "LEAN";
 }
 
-function varianceLabel(payoutNoise: number) {
-  if (payoutNoise >= 0.45) return "HIGH";
-  if (payoutNoise >= 0.3) return "MEDIUM";
+function profileVariance(profile: RewardProfile) {
+  const values = Object.values(profile);
+  const mean = values.reduce((total, value) => total + value, 0) / values.length;
+  return values.reduce((total, value) => total + (value - mean) ** 2, 0) / values.length;
+}
+
+function varianceLabel(variance: number) {
+  if (variance >= 0.004) return "HIGH";
+  if (variance >= 0.002) return "MEDIUM";
   return "LOW";
 }
 
-function playTone(enabled: boolean, multiplier: number | "reveal") {
+function playTone(enabled: boolean, result: Shot["result"], multiplier: number) {
   if (!enabled || typeof window === "undefined" || !window.AudioContext) return;
   const context = new window.AudioContext();
   const oscillator = context.createOscillator();
   const gain = context.createGain();
-  const frequency =
-    multiplier === "reveal" ? 700 : 150 + Math.min(multiplier, 5) * 130;
-  oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-  oscillator.type = multiplier === "reveal" ? "triangle" : "sine";
-  gain.gain.setValueAtTime(0.055, context.currentTime);
+  const frequencies: Record<Shot["result"], number> = {
+    cold: 165,
+    cool: 220,
+    warm: 310,
+    near: 430,
+    repeat: 125,
+    hit: 720 + Math.min(multiplier, 8) * 35,
+  };
+  oscillator.frequency.setValueAtTime(frequencies[result], context.currentTime);
+  oscillator.type = result === "hit" ? "triangle" : "sine";
+  gain.gain.setValueAtTime(0.05, context.currentTime);
   gain.gain.exponentialRampToValueAtTime(
     0.0001,
-    context.currentTime + (multiplier === "reveal" ? 0.55 : 0.2),
+    context.currentTime + (result === "hit" ? 0.65 : 0.18),
   );
   oscillator.connect(gain);
   gain.connect(context.destination);
   oscillator.start();
-  oscillator.stop(context.currentTime + (multiplier === "reveal" ? 0.55 : 0.2));
+  oscillator.stop(context.currentTime + (result === "hit" ? 0.65 : 0.18));
   oscillator.addEventListener("ended", () => void context.close());
 }
 
@@ -199,7 +249,7 @@ export default function Home() {
   const [game, setGame] = useState<GameState | null>(null);
   const [aim, setAim] = useState<Point>({ x: 0.5, y: 0.5 });
   const [notice, setNotice] = useState(
-    "Click anywhere on the target to loose your first arrow.",
+    "Pick a search pin. Misses cost a little, but every result narrows the field.",
   );
   const [showRules, setShowRules] = useState(false);
 
@@ -210,12 +260,12 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
-          if (parsed.version === 3 && parsed.round?.hotspot) {
+          if (parsed.version === 4 && parsed.round?.hotspot) {
             setGame(parsed);
             setNotice(
               parsed.round.finished
-                ? "The hotspot is revealed. Study the pattern, then start a new round."
-                : `${QUIVER_SIZE - parsed.round.shots.length} arrows remain in this quiver.`,
+                ? `Hotspot captured in ${parsed.round.shots.length} arrows.`
+                : `${parsed.round.possibleIds.length} exact points remain possible.`,
             );
             return;
           }
@@ -233,17 +283,11 @@ export default function Home() {
     if (game) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game]);
 
-  const bestShot = useMemo(() => {
-    if (!game?.round.shots.length) return null;
-    return game.round.shots.reduce((best, shot) =>
+  const bestClue = useMemo(() => {
+    const misses = game?.round.shots.filter((shot) => shot.result !== "hit") ?? [];
+    if (!misses.length) return null;
+    return misses.reduce((best, shot) =>
       shot.multiplier > best.multiplier ? shot : best,
-    );
-  }, [game]);
-
-  const closestShot = useMemo(() => {
-    if (!game?.round.shots.length) return null;
-    return game.round.shots.reduce((best, shot) =>
-      shot.distance < best.distance ? shot : best,
     );
   }, [game]);
 
@@ -257,15 +301,27 @@ export default function Home() {
   }
 
   const { round } = game;
-  const arrowsLeft = QUIVER_SIZE - round.shots.length;
+  const hotspotPoint = pointById(round.hotspot.pointId);
+  const aimPoint = nearestSearchPoint(aim);
+  const rewardValues = round.possibleIds.map((pointId) =>
+    captureReward(pointId, round.possibleIds, round.hotspot.profile),
+  );
+  const rewardLow = Math.min(...rewardValues);
+  const rewardHigh = Math.max(...rewardValues);
+  const openingReward = captureReward(
+    round.hotspot.pointId,
+    ALL_POINT_IDS,
+    round.hotspot.profile,
+  );
+  const capturedShot = round.shots.find((shot) => shot.result === "hit") ?? null;
   const roundNet = round.shots.reduce((sum, shot) => sum + shot.net, 0);
-  const lifetimeNet = game.stats.returned - game.stats.wagered;
-  const hotspotStdDev = round.hotspot.peakRtp * round.hotspot.payoutNoise;
-  const hotspotVariance = hotspotStdDev ** 2;
   const roundReturned = round.shots.reduce((sum, shot) => sum + shot.returned, 0);
   const realizedRtp = round.shots.length
     ? roundReturned / (round.shots.length * ARROW_STAKE)
     : 0;
+  const lifetimeNet = game.stats.returned - game.stats.wagered;
+  const missVariance = profileVariance(round.hotspot.profile);
+  const missSpread = round.hotspot.profile.near - round.hotspot.profile.cold;
 
   function shoot(point: Point) {
     if (!game || game.round.finished || game.balance < ARROW_STAKE) return;
@@ -274,53 +330,88 @@ export default function Home() {
       return;
     }
 
-    const meanRtp = localMeanRtp(point, game.round.hotspot);
-    const multiplier = samplePayout(meanRtp, game.round.hotspot.payoutNoise);
-    const returned = Math.round(ARROW_STAKE * multiplier);
-    const shotNumber = game.round.shots.length + 1;
-    const lastArrow = shotNumber === QUIVER_SIZE;
-    const net = returned - ARROW_STAKE;
+    const selected = nearestSearchPoint(point);
+    const isPossible = round.possibleIds.includes(selected.id);
+    const isHit = isPossible && selected.id === round.hotspot.pointId;
+    const rewardOnAim = captureReward(
+      selected.id,
+      round.possibleIds,
+      round.hotspot.profile,
+    );
+    let result: Shot["result"];
+    let multiplier: number;
+    let nextPossibleIds = round.possibleIds;
+
+    if (isHit) {
+      result = "hit";
+      multiplier = rewardOnAim;
+    } else if (!isPossible) {
+      result = "repeat";
+      multiplier = REPEAT_PAYOUT;
+    } else {
+      const miss = missMultiplier(
+        selected.id,
+        round.hotspot.pointId,
+        round.hotspot.profile,
+      );
+      result = miss.band;
+      multiplier = miss.multiplier;
+      nextPossibleIds = round.possibleIds.filter((possibleId) =>
+        possibleId !== selected.id &&
+        heatBandBetween(selected, pointById(possibleId)) === miss.band,
+      );
+    }
+
+    const returned = round2(ARROW_STAKE * multiplier);
+    const net = round2(returned - ARROW_STAKE);
+    const shotNumber = round.shots.length + 1;
     const shot: Shot = {
-      ...point,
-      id: Date.now() + shotNumber,
+      ...selected,
+      key: Date.now() + shotNumber,
       number: shotNumber,
-      meanRtp,
       multiplier,
       returned,
       net,
-      distance: distance(point, game.round.hotspot),
+      distance: distance(selected, hotspotPoint),
+      result,
+      possibleBefore: round.possibleIds.length,
+      possibleAfter: isHit ? 1 : nextPossibleIds.length,
+      rewardOnAim,
     };
 
     setGame({
       ...game,
-      balance: game.balance + net,
+      balance: round2(game.balance + net),
       round: {
-        ...game.round,
-        shots: [...game.round.shots, shot],
-        finished: lastArrow,
+        ...round,
+        possibleIds: isHit ? [round.hotspot.pointId] : nextPossibleIds,
+        shots: [...round.shots, shot],
+        finished: isHit,
       },
       stats: {
         ...game.stats,
-        rounds: game.stats.rounds + (lastArrow ? 1 : 0),
+        rounds: game.stats.rounds + (isHit ? 1 : 0),
         arrows: game.stats.arrows + 1,
         wagered: game.stats.wagered + ARROW_STAKE,
-        returned: game.stats.returned + returned,
+        returned: round2(game.stats.returned + returned),
         bestMultiplier: Math.max(game.stats.bestMultiplier, multiplier),
+        bestFind: isHit
+          ? game.stats.bestFind === null
+            ? shotNumber
+            : Math.min(game.stats.bestFind, shotNumber)
+          : game.stats.bestFind,
       },
     });
 
-    if (lastArrow) {
-      setNotice("Quiver empty. The hidden field is now revealed.");
-      playTone(game.sound, "reveal");
-    } else if (multiplier >= 2) {
-      setNotice(`${multiplier.toFixed(2)}× — scorching. Search around arrow ${shotNumber}.`);
-      playTone(game.sound, multiplier);
-    } else if (multiplier >= 1) {
-      setNotice(`${multiplier.toFixed(2)}× — warm evidence, but the noise can bluff.`);
-      playTone(game.sound, multiplier);
+    playTone(game.sound, result, multiplier);
+    if (isHit) {
+      setNotice(`Bullseye found in ${shotNumber} arrows — ${multiplier.toFixed(2)}× captured.`);
+    } else if (result === "repeat") {
+      setNotice("That pin was already ruled out. It paid 0.96× and added no new evidence.");
     } else {
-      setNotice(`${multiplier.toFixed(2)}× — a cold read. ${QUIVER_SIZE - shotNumber} arrows left.`);
-      playTone(game.sound, multiplier);
+      setNotice(
+        `${multiplier.toFixed(2)}× ${result} read — ${nextPossibleIds.length} exact points remain.`,
+      );
     }
   }
 
@@ -352,7 +443,7 @@ export default function Home() {
     else if (event.key === "ArrowDown") next = { ...aim, y: Math.min(0.98, aim.y + step) };
     else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      shoot(aim);
+      shoot(aimPoint);
       return;
     } else return;
     event.preventDefault();
@@ -360,17 +451,15 @@ export default function Home() {
   }
 
   function startNextRound() {
-    if (!game) return;
-    setGame({ ...game, round: createRound(game.round.id + 1) });
+    setGame({ ...game, round: createRound(round.id + 1) });
     setAim({ x: 0.5, y: 0.5 });
-    setNotice("Fresh target. The hotspot has moved—and changed shape.");
+    setNotice("Fresh target. The exact hotspot and reward curve have both moved.");
   }
 
   function refill() {
-    if (!game) return;
     setGame({
       ...game,
-      balance: game.balance + 500,
+      balance: round2(game.balance + 500),
       stats: { ...game.stats, refills: game.stats.refills + 1 },
     });
     setNotice("500 free demo credits added. Nothing here has cash value.");
@@ -381,78 +470,72 @@ export default function Home() {
     window.localStorage.removeItem(STORAGE_KEY);
     setGame(createGame());
     setAim({ x: 0.5, y: 0.5 });
-    setNotice("Clean slate. A new hidden field is waiting.");
+    setNotice("Clean slate. A new exact hotspot is waiting.");
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <a href="#range" className="wordmark" aria-label="Hotspot game home">
-          HOT<span>SPOT</span><sup>10</sup>
+          HOT<span>SPOT</span><sup>∞</sup>
         </a>
         <div className="demo-stamp">PLAY MONEY · LOCAL ONLY</div>
         <div className="wallet">
-          <span>
-            <small>RANGE BALANCE</small>
-            <strong>{formatCredits(game.balance)}</strong>
-          </span>
+          <span><small>RANGE BALANCE</small><strong>{formatCredits(game.balance)}</strong></span>
           <button type="button" onClick={refill}>+500</button>
         </div>
       </header>
 
       <section className="headline">
         <div>
-          <p>ARCHERY / INFERENCE / PAYOUTS</p>
-          <h1>TEN ARROWS.<br /><em>ONE SECRET.</em></h1>
+          <p>ARCHERY / DEDUCTION / PAYOUTS</p>
+          <h1>UNLIMITED ARROWS.<br /><em>ONE HOTSPOT.</em></h1>
         </div>
         <p className="intro">
-          The bullseye is a decoy. Somewhere on the board is one exact, high-return
-          point. Each payout is a noisy clue to its direction and distance.
+          Hunt one exact point among 37 pins. Every miss loses a little and tells
+          you how far away you are. Find it quickly to preserve the richest prize.
         </p>
       </section>
 
       <section className="range-layout" id="range">
         <aside className="brief-panel">
-          <div className="round-id">
-            <span>ROUND</span>
-            <strong>{String(round.id).padStart(2, "0")}</strong>
-          </div>
+          <div className="round-id"><span>ROUND</span><strong>{String(round.id).padStart(2, "0")}</strong></div>
 
           <div className="mission">
             <span className="section-label">YOUR READ</span>
-            <h2>FIND THE HEAT BEFORE THE QUIVER RUNS DRY.</h2>
+            <h2>FOLLOW THE HEAT. RULE OUT PINS. HIT FAST.</h2>
             <ol>
-              <li><b>01</b><span>Click the target to fire.</span></li>
-              <li><b>02</b><span>Use payouts as evidence.</span></li>
-              <li><b>03</b><span>Exploit your warmest area.</span></li>
+              <li><b>01</b><span>Fire at any search pin.</span></li>
+              <li><b>02</b><span>Nearer misses pay closer to 1×.</span></li>
+              <li><b>03</b><span>Use fresh evidence; repeats cost.</span></li>
             </ol>
           </div>
 
           <div className="hidden-parameters">
             <span className="section-label">ROUND PARAMETERS</span>
-            <p><span>BOARD AVG. RTP</span><b>99.00%</b></p>
-            <p><span>EXACT POINT X / Y</span><b>{round.finished ? `${(round.hotspot.x * 100).toFixed(1)} / ${(round.hotspot.y * 100).toFixed(1)}` : "██.█ / ██.█"}</b></p>
-            <p><span>PEAK MEAN RTP</span><b>{round.finished ? `${round.hotspot.peakRtp.toFixed(2)}×` : "█.██×"}</b></p>
-            <p><span>HOTSPOT STD. DEV.</span><b>{round.finished ? `${hotspotStdDev.toFixed(2)}×` : "█.██×"}</b></p>
-            <p><span>HOTSPOT VARIANCE</span><b>{round.finished ? `${hotspotVariance.toFixed(2)}×²` : "█.██×²"}</b></p>
+            <p><span>GOOD-PLAY RTP</span><b>99.00%</b></p>
+            <p><span>EXACT POINT X / Y</span><b>{round.finished ? `${(hotspotPoint.x * 100).toFixed(1)} / ${(hotspotPoint.y * 100).toFixed(1)}` : "██.█ / ██.█"}</b></p>
+            <p><span>OPENING HOTSPOT</span><b>{round.finished ? `${openingReward.toFixed(2)}×` : "█.██×"}</b></p>
+            <p><span>MISS RANGE</span><b>{round.finished ? `${round.hotspot.profile.cold.toFixed(2)}–${round.hotspot.profile.near.toFixed(2)}×` : "█.██–█.██×"}</b></p>
+            <p><span>MISS VARIANCE</span><b>{round.finished ? `${missVariance.toFixed(4)}×²` : "█.████×²"}</b></p>
           </div>
 
           <button type="button" className="rules-button" onClick={() => setShowRules(true)}>
-            HOW THE MATH WORKS <span>↗</span>
+            WHY GOOD PLAY IS 99% <span>↗</span>
           </button>
         </aside>
 
         <section className="target-stage">
           <div className="stage-topline">
-            <span>{round.finished ? "EXACT POINT REVEALED" : "LIVE TARGET · CLICK TO FIRE"}</span>
-            <strong>{ARROW_STAKE} CREDITS / ARROW</strong>
+            <span>{round.finished ? "EXACT HOTSPOT CAPTURED" : "LIVE TARGET · SHOTS SNAP TO PINS"}</span>
+            <strong>{ARROW_STAKE} CREDITS / ARROW · NO LIMIT</strong>
           </div>
 
           <div className="target-wrap">
             <button
               type="button"
               className={`target-board ${round.finished ? "is-revealed" : ""}`}
-              aria-label="Archery target. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
+              aria-label="Archery target with 37 search pins. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
               onPointerMove={handlePointerMove}
               onPointerDown={handlePointerDown}
               onKeyDown={handleTargetKey}
@@ -462,126 +545,111 @@ export default function Home() {
               <span className="ring-groove groove-two" />
               <span className="ring-groove groove-three" />
 
+              {SEARCH_POINTS.map((point) => {
+                const possible = round.possibleIds.includes(point.id);
+                return (
+                  <span
+                    className={`search-pin ${possible ? "possible" : "eliminated"} ${aimPoint.id === point.id && !round.finished ? "aimed" : ""}`}
+                    key={point.id}
+                    style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                  />
+                );
+              })}
+
               {round.finished && (
-                <span
-                  className="hotspot-point"
-                  style={{
-                    left: `${round.hotspot.x * 100}%`,
-                    top: `${round.hotspot.y * 100}%`,
-                  }}
-                ><i /><b>EXACT HOTSPOT</b></span>
+                <span className="hotspot-point" style={{ left: `${hotspotPoint.x * 100}%`, top: `${hotspotPoint.y * 100}%` }}>
+                  <i /><b>EXACT HOTSPOT</b>
+                </span>
               )}
 
-              {round.shots.map((shot) => (
+              {round.shots.slice(-20).map((shot) => (
                 <span
-                  className={`arrow-mark ${multiplierClass(shot.multiplier)} ${closestShot?.id === shot.id && round.finished ? "closest" : ""}`}
-                  key={shot.id}
-                  style={{ left: `${shot.x * 100}%`, top: `${shot.y * 100}%`, "--angle": `${18 + shot.number * 19}deg` } as CSSProperties}
+                  className={`arrow-mark ${shot.result}`}
+                  key={shot.key}
+                  style={{ left: `${shot.x * 100}%`, top: `${shot.y * 100}%`, "--angle": `${18 + (shot.number % 12) * 19}deg` } as CSSProperties}
                 >
-                  <i />
-                  <b>{shot.number}</b>
-                  <em>{shot.multiplier.toFixed(2)}×</em>
+                  <i /><b>{shot.number}</b><em>{shot.multiplier.toFixed(2)}×</em>
                 </span>
               ))}
 
               {!round.finished && (
-                <span className="aim-reticle" style={{ left: `${aim.x * 100}%`, top: `${aim.y * 100}%` }}>
-                  <i />
-                </span>
+                <span className="aim-reticle" style={{ left: `${aimPoint.x * 100}%`, top: `${aimPoint.y * 100}%` }}><i /></span>
               )}
             </button>
-
-            <span className="target-caption caption-left">NOT TO SCALE</span>
+            <span className="target-caption caption-left">37 EXACT PINS</span>
             <span className="target-caption caption-right">RANGE 07</span>
           </div>
 
-          <div className="quiver-row" aria-label={`${arrowsLeft} arrows remaining`}>
-            <div>
-              <span className="section-label">QUIVER</span>
-              <strong>{arrowsLeft} LEFT</strong>
-            </div>
-            <div className="arrow-slots">
-              {Array.from({ length: QUIVER_SIZE }, (_, index) => (
-                <span className={index < round.shots.length ? "spent" : "ready"} key={index}>➶</span>
-              ))}
-            </div>
+          <div className="search-row" aria-label={`${round.possibleIds.length} hotspot locations remain possible`}>
+            <div><span className="section-label">ARROWS FIRED</span><strong>{round.shots.length}</strong></div>
+            <div><span className="section-label">POSSIBLE POINTS</span><strong>{round.possibleIds.length} / {SEARCH_POINTS.length}</strong></div>
+            <div><span className="section-label">HIT REWARD NOW</span><strong>{rewardLow.toFixed(2)}–{rewardHigh.toFixed(2)}×</strong></div>
           </div>
 
           <div className="notice" aria-live="polite">
-            <span className="pulse" />
-            <p>{notice}</p>
-            {bestShot && <strong>BEST CLUE {bestShot.multiplier.toFixed(2)}×</strong>}
+            <span className="pulse" /><p>{notice}</p>
+            {bestClue && <strong>HOTTEST MISS {bestClue.multiplier.toFixed(2)}×</strong>}
           </div>
         </section>
 
         <aside className="ledger-panel">
           <div className="ledger-title">
             <span>SHOT LEDGER</span>
-            <button
-              type="button"
-              onClick={() => setGame({ ...game, sound: !game.sound })}
-              aria-label={game.sound ? "Mute sound" : "Enable sound"}
-            >
+            <button type="button" onClick={() => setGame({ ...game, sound: !game.sound })} aria-label={game.sound ? "Mute sound" : "Enable sound"}>
               {game.sound ? "SOUND ON" : "SOUND OFF"}
             </button>
           </div>
 
           <div className="round-return">
             <span>ROUND NET</span>
-            <strong className={roundNet >= 0 ? "positive" : "negative"}>
-              {roundNet >= 0 ? "+" : ""}{formatCredits(roundNet)}
-            </strong>
+            <strong className={roundNet >= 0 ? "positive" : "negative"}>{roundNet >= 0 ? "+" : ""}{formatCredits(roundNet)}</strong>
             <small>demo credits</small>
           </div>
 
           <div className="shot-list">
             {round.shots.length === 0 ? (
-              <div className="empty-ledger">
-                <span>➶</span>
-                <p>Your ten observations<br />will appear here.</p>
-              </div>
+              <div className="empty-ledger"><span>➶</span><p>Your search evidence<br />will appear here.</p></div>
             ) : (
-              round.shots.map((shot) => (
-                <div className="shot-row" key={shot.id}>
-                  <span className={`shot-number ${multiplierClass(shot.multiplier)}`}>{shot.number}</span>
+              [...round.shots].reverse().map((shot) => (
+                <div className="shot-row" key={shot.key}>
+                  <span className={`shot-number ${shot.result}`}>{shot.number}</span>
                   <div>
-                    <strong>{shot.multiplier.toFixed(2)}× PAID</strong>
-                    <small>{round.finished ? `${shot.meanRtp.toFixed(2)}× local mean` : shot.multiplier >= 1 ? "warm signal" : "cold signal"}</small>
+                    <strong>{shot.multiplier.toFixed(2)}× · {resultLabel(shot.result)}</strong>
+                    <small>{shot.result === "hit" ? `${shot.possibleBefore} possible before capture` : shot.result === "repeat" ? "ruled-out pin repeated" : `${shot.possibleBefore} → ${shot.possibleAfter} possible`}</small>
                   </div>
-                  <b className={shot.net >= 0 ? "positive" : "negative"}>{shot.net >= 0 ? "+" : ""}{shot.net}</b>
+                  <b className={shot.net >= 0 ? "positive" : "negative"}>{shot.net >= 0 ? "+" : ""}{formatCredits(shot.net)}</b>
                 </div>
               ))
             )}
           </div>
 
-          {round.finished ? (
+          {round.finished && capturedShot ? (
             <div className="reveal-card">
-              <span>POINT REVEALED · {qualityLabel(round.hotspot.peakRtp)} / {varianceLabel(round.hotspot.payoutNoise)} VARIANCE</span>
-              <h3>{closestShot ? `ARROW ${closestShot.number} WAS CLOSEST.` : "FIELD REVEALED."}</h3>
-              <p>
-                It landed {closestShot ? (closestShot.distance * 200).toFixed(1) : "0"}% of a target radius from the exact point.
-              </p>
+              <span>HOTSPOT CAPTURED · {rewardQuality(openingReward)} / {varianceLabel(missVariance)} VARIANCE</span>
+              <h3>FOUND IN {round.shots.length} ARROWS.</h3>
+              <p>The exact point paid {capturedShot.multiplier.toFixed(2)}×. Faster deductions expose the prize while more uncertainty—and more upside—still remains.</p>
               <div className="reveal-stats">
-                <div><small>HOTSPOT QUALITY</small><strong>{round.hotspot.peakRtp.toFixed(2)}×</strong><em>{qualityLabel(round.hotspot.peakRtp)} PEAK MEAN</em></div>
-                <div><small>BOARD AVG. RTP</small><strong>99.0%</strong><em>AREA-NORMALIZED</em></div>
-                <div><small>PAYOUT STD. DEV.</small><strong>±{hotspotStdDev.toFixed(2)}×</strong><em>{Math.round(round.hotspot.payoutNoise * 100)}% OF MEAN</em></div>
-                <div><small>PAYOUT VARIANCE</small><strong>{hotspotVariance.toFixed(2)}×²</strong><em>{varianceLabel(round.hotspot.payoutNoise)} VOLATILITY</em></div>
-                <div><small>OFF-HOTSPOT FLOOR</small><strong>{round.hotspot.baseRtp.toFixed(2)}×</strong><em>SOLVED THIS ROUND</em></div>
-                <div><small>REALIZED RTP</small><strong>{(realizedRtp * 100).toFixed(0)}%</strong><em>THIS QUIVER</em></div>
+                <div><small>CAPTURE PAYOUT</small><strong>{capturedShot.multiplier.toFixed(2)}×</strong><em>FINAL ARROW</em></div>
+                <div><small>OPENING VALUE</small><strong>{openingReward.toFixed(2)}×</strong><em>{rewardQuality(openingReward)} HOTSPOT</em></div>
+                <div><small>MISS SPREAD</small><strong>{missSpread.toFixed(2)}×</strong><em>{round.hotspot.profile.cold.toFixed(2)}–{round.hotspot.profile.near.toFixed(2)}×</em></div>
+                <div><small>MISS VARIANCE</small><strong>{missVariance.toFixed(4)}×²</strong><em>{varianceLabel(missVariance)} SIGNAL</em></div>
+                <div><small>ARROWS USED</small><strong>{round.shots.length}</strong><em>UNLIMITED AVAILABLE</em></div>
+                <div><small>REALIZED RTP</small><strong>{(realizedRtp * 100).toFixed(0)}%</strong><em>THIS HUNT</em></div>
               </div>
-              <button type="button" onClick={startNextRound}>STRING A NEW QUIVER →</button>
+              <button type="button" onClick={startNextRound}>SET A NEW HOTSPOT →</button>
             </div>
           ) : (
             <div className="live-tip">
               <span>RANGE NOTE</span>
-              <p>A single hot payout may be noise. Cluster evidence before you commit the remaining arrows.</p>
+              <p>Nearer misses pay more. Every fresh possible pin is exactly 99% EV; your edge is needing fewer wagers to solve the board.</p>
             </div>
           )}
 
           <details className="lifetime">
             <summary>LIFETIME / THIS DEVICE <span>+</span></summary>
-            <div><small>Rounds</small><strong>{game.stats.rounds}</strong></div>
+            <div><small>Hotspots found</small><strong>{game.stats.rounds}</strong></div>
             <div><small>Arrows fired</small><strong>{game.stats.arrows}</strong></div>
+            <div><small>Fastest find</small><strong>{game.stats.bestFind ? `${game.stats.bestFind} arrows` : "—"}</strong></div>
             <div><small>Best payout</small><strong>{game.stats.bestMultiplier.toFixed(2)}×</strong></div>
             <div><small>Net credits</small><strong className={lifetimeNet >= 0 ? "positive" : "negative"}>{lifetimeNet >= 0 ? "+" : ""}{formatCredits(lifetimeNet)}</strong></div>
           </details>
@@ -592,27 +660,27 @@ export default function Home() {
 
       <footer>
         <p>PLAY-MONEY PROTOTYPE · NO DEPOSITS · NO WITHDRAWALS · NO CASH VALUE</p>
-        <p>EVERY BOARD IS AREA-NORMALIZED TO 99% RTP · PLAYER CHOICES CAN RUN ABOVE OR BELOW IT</p>
+        <p>FRESH POSSIBLE SHOTS ARE EXACTLY 99% EV · EVERY MISS PAYS LESS THAN 1×</p>
       </footer>
 
       {showRules && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="math-title">
           <div className="math-modal">
             <button type="button" className="modal-close" onClick={() => setShowRules(false)} aria-label="Close">×</button>
-            <span className="modal-kicker">THE HIDDEN FIELD</span>
-            <h2 id="math-title">CLOSER MEANS HOTTER.<br />NOT CERTAIN.</h2>
-            <p>Every round secretly samples one exact point <i>c</i>, a peak mean RTP <i>P</i>, and payout-noise standard deviation <i>v</i>. The off-hotspot floor <i>B</i> is then solved so a uniformly random point on the board averages 0.99×.</p>
+            <span className="modal-kicker">THE 99% PROOF</span>
+            <h2 id="math-title">EVERY GOOD SHOT.<br />EXACTLY 99% EV.</h2>
+            <p>The hotspot is one exact point among the pins still consistent with your previous heat readings. A cold, cool, warm, or near miss pays less than 1× and removes every point that could not have produced that reading.</p>
             <div className="formula">
-              <small>EXPECTED PAYOUT AT DISTANCE d</small>
-              <strong>μ(d) = B + (P − B)e<sup>−d² / 2(0.14)²</sup></strong>
+              <small>JACKPOT FOR AIM POINT a WITH N POSSIBILITIES</small>
+              <strong>J(a) = 0.99N − Σ<sub>h ≠ a</sub> m(a,h)</strong>
             </div>
             <div className="parameter-grid">
-              <div><span>PEAK P</span><strong>2.40–4.40×</strong><p>The secret center is deliberately rich.</p></div>
-              <div><span>EXACT POINT c</span><strong>ONE LOCATION</strong><p>The reveal marks a coordinate, not an area.</p></div>
-              <div><span>NOISE SD v</span><strong>16–55%</strong><p>Randomized independently each round.</p></div>
-              <div><span>BOARD AVERAGE</span><strong>0.99×</strong><p>The spatial average is normalized every round.</p></div>
+              <div><span>GOOD SHOT</span><strong>a ∈ S</strong><p>Aim at any point that remains possible.</p></div>
+              <div><span>HIT CHANCE</span><strong>1 / N</strong><p>The secret is uniform over the surviving set.</p></div>
+              <div><span>EVERY MISS</span><strong>0.78–0.99×</strong><p>The randomized heat curve is always below break-even.</p></div>
+              <div><span>BAD REPEAT</span><strong>0.96×</strong><p>A gentle penalty with no new information.</p></div>
             </div>
-            <p className="math-note">If K is the board-average Gaussian weight, B = (0.99 − PK) / (1 − K). At the hotspot, payout SD = Pv and variance = (Pv)². The noise multiplier has mean 1, so E[payout | location] = μ(d).</p>
+            <p className="math-note">For a fresh possible point, E[M] = [J(a) + Σm(a,h)] / N = 0.99 exactly. After a miss, the observed heat band creates a smaller uniform possibility set, so the same proof applies again. Strategy changes how many wagers you need—not the 99% expected return of a well-chosen arrow.</p>
             <button type="button" className="close-primary" onClick={() => setShowRules(false)}>BACK TO THE RANGE</button>
           </div>
         </div>

@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "Hotspot — Ten Arrows. One Secret.";
+const title = "Hotspot — Every Arrow Costs. Find It Fast.";
 const description =
-  "A play-money archery search game. Fire ten arrows, infer the hidden high-RTP field from noisy payouts, then see what was hiding beneath the target.";
+  "A play-money archery deduction game. Fire unlimited arrows, use sub-1× heat readings to isolate one exact point, and capture its randomized reward.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

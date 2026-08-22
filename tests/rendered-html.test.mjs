@@ -29,7 +29,7 @@ test("server-renders the Hotspot loading state and metadata", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Hotspot — Ten Arrows\. One Secret\.<\/title>/i);
+  assert.match(html, /<title>Hotspot — Every Arrow Costs\. Find It Fast\.<\/title>/i);
   assert.match(html, /STRINGING THE RANGE…/);
   assert.match(html, /Hotspot archery game poster/);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/);
@@ -50,7 +50,8 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.ok(assets.some((name) => name.endsWith(".css")));
 
   assert.match(config, /base:\s*"\/hotspot\/"/);
-  assert.match(source, /const TARGET_BOARD_RTP = 0\.99/);
-  assert.match(source, /const QUIVER_SIZE = 10/);
-  assert.match(source, /hotspot-archery-state-v3/);
+  assert.match(source, /const TARGET_RTP = 0\.99/);
+  assert.match(source, /const REPEAT_PAYOUT = 0\.96/);
+  assert.match(source, /J\(a\) = 0\.99N/);
+  assert.match(source, /hotspot-archery-state-v4/);
 });
