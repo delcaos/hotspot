@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const TARGET_RTP = 0.99;
+const MIN_HEAT_BUCKET = 16;
+const DUST_PAYOUTS = [0, 0.01, 0.02];
+const BURST_PAYOUTS = [0.55, 0.65, 0.75, 0.85, 0.95];
+const DUST_MEAN = 0.01;
+const BURST_MEAN = 0.75;
 const radius = 6;
 const spacing = 0.062;
 const points = [];
@@ -22,27 +27,65 @@ function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function bandBetween(aId, bId) {
-  const separation = distance(points[aId], points[bId]);
-  if (separation <= 0.1) return "near";
-  if (separation <= 0.19) return "warm";
-  if (separation <= 0.31) return "cool";
-  return "cold";
+function bandsForAim(aimId, possibleIds) {
+  const candidates = possibleIds
+    .filter((possibleId) => possibleId !== aimId)
+    .sort((aId, bId) => {
+      const separation = distance(points[aimId], points[aId]) - distance(points[aimId], points[bId]);
+      return separation || aId - bId;
+    });
+  const bandCount = Math.min(
+    4,
+    Math.max(1, Math.floor(candidates.length / MIN_HEAT_BUCKET)),
+  );
+  const labels = {
+    1: ["cold"],
+    2: ["near", "cold"],
+    3: ["near", "warm", "cold"],
+    4: ["near", "warm", "cool", "cold"],
+  };
+  const bands = new Map();
+
+  candidates.forEach((candidateId, index) => {
+    const bucket = Math.min(
+      bandCount - 1,
+      Math.floor((index * bandCount) / candidates.length),
+    );
+    bands.set(candidateId, labels[bandCount][bucket]);
+  });
+
+  return bands;
 }
 
 function rewardFor(aimId, possibleIds, profile) {
+  const bands = bandsForAim(aimId, possibleIds);
   const missTotal = possibleIds.reduce((total, hotspotId) => {
     if (hotspotId === aimId) return total;
-    return total + profile[bandBetween(aimId, hotspotId)];
+    return total + profile[bands.get(hotspotId)];
   }, 0);
   return Math.round((TARGET_RTP * possibleIds.length - missTotal) * 100) / 100;
 }
 
+test("dust-or-burst payouts preserve their configured means", () => {
+  const dustMean = DUST_PAYOUTS.reduce((total, value) => total + value, 0) / DUST_PAYOUTS.length;
+  const burstMean = BURST_PAYOUTS.reduce((total, value) => total + value, 0) / BURST_PAYOUTS.length;
+
+  assert.equal(dustMean, DUST_MEAN);
+  assert.equal(burstMean, BURST_MEAN);
+
+  for (const expectedMean of [0.02, 0.04, 0.05, 0.08, 0.1, 0.14, 0.17, 0.22]) {
+    const burstChance = (expectedMean - DUST_MEAN) / (BURST_MEAN - DUST_MEAN);
+    const reconstructedMean = (1 - burstChance) * DUST_MEAN + burstChance * BURST_MEAN;
+    assert.ok(Math.abs(reconstructedMean - expectedMean) < 1e-12);
+    assert.ok(1 - burstChance > 0.7);
+  }
+});
+
 test("every tested good shot has exactly 99% conditional RTP", () => {
   const profiles = [
-    { cold: 0.03, cool: 0.16, warm: 0.4, near: 0.78 },
-    { cold: 0.08, cool: 0.3, warm: 0.62, near: 0.94 },
-    { cold: 0.06, cool: 0.23, warm: 0.51, near: 0.86 },
+    { cold: 0.02, cool: 0.05, warm: 0.1, near: 0.17 },
+    { cold: 0.04, cool: 0.08, warm: 0.14, near: 0.22 },
+    { cold: 0.03, cool: 0.07, warm: 0.12, near: 0.2 },
   ];
 
   assert.equal(points.length, 127);
@@ -54,12 +97,16 @@ test("every tested good shot has exactly 99% conditional RTP", () => {
 
   // Cover every state obtainable from every possible first arrow and heat read.
   for (const aimId of openingIds) {
+    const bands = bandsForAim(aimId, openingIds);
     for (const observedBand of ["cold", "cool", "warm", "near"]) {
       const nextIds = openingIds.filter(
         (candidateId) =>
-          candidateId !== aimId && bandBetween(aimId, candidateId) === observedBand,
+          candidateId !== aimId && bands.get(candidateId) === observedBand,
       );
-      if (nextIds.length) remember(nextIds);
+      if (nextIds.length) {
+        assert.ok(nextIds.length >= 31 && nextIds.length <= 32);
+        remember(nextIds);
+      }
     }
   }
 
@@ -71,10 +118,11 @@ test("every tested good shot has exactly 99% conditional RTP", () => {
       remember(possibleIds);
       const aimId = possibleIds[(secretId * 17 + step * 13) % possibleIds.length];
       if (aimId === secretId) break;
-      const observedBand = bandBetween(aimId, secretId);
+      const bands = bandsForAim(aimId, possibleIds);
+      const observedBand = bands.get(secretId);
       possibleIds = possibleIds.filter(
         (candidateId) =>
-          candidateId !== aimId && bandBetween(aimId, candidateId) === observedBand,
+          candidateId !== aimId && bands.get(candidateId) === observedBand,
       );
       assert.ok(possibleIds.includes(secretId));
       step += 1;
@@ -84,15 +132,16 @@ test("every tested good shot has exactly 99% conditional RTP", () => {
 
   for (const profile of profiles) {
     assert.ok(Object.values(profile).every((multiplier) => multiplier < 1));
-    assert.ok(profile.near - profile.cold >= 0.7);
+    assert.ok(profile.near - profile.cold >= 0.13);
     let maximumReward = 0;
     let minimumOpeningReward = Number.POSITIVE_INFINITY;
 
     for (const possibleIds of stateMap.values()) {
       for (const aimId of possibleIds) {
+        const bands = bandsForAim(aimId, possibleIds);
         const missTotal = possibleIds.reduce((total, hotspotId) => {
           if (hotspotId === aimId) return total;
-          return total + profile[bandBetween(aimId, hotspotId)];
+          return total + profile[bands.get(hotspotId)];
         }, 0);
         const reward = rewardFor(aimId, possibleIds, profile);
         const expectedMultiplier = (reward + missTotal) / possibleIds.length;
@@ -107,7 +156,7 @@ test("every tested good shot has exactly 99% conditional RTP", () => {
     }
 
     assert.ok(stateMap.size > 400);
-    assert.ok(minimumOpeningReward > 75);
-    assert.ok(maximumReward > 100);
+    assert.ok(minimumOpeningReward > 110);
+    assert.ok(maximumReward > 110);
   }
 });

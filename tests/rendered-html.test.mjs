@@ -51,7 +51,9 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
 
   assert.match(config, /base:\s*"\/hotspot\/"/);
   assert.match(source, /const TARGET_RTP = 0\.99/);
-  assert.match(source, /const REPEAT_PAYOUT = 0\.96/);
+  assert.match(source, /const DUST_PAYOUTS = \[0, 0\.01, 0\.02\]/);
+  assert.match(source, /const BURST_PAYOUTS = \[0\.55, 0\.65, 0\.75, 0\.85, 0\.95\]/);
   assert.match(source, /J\(a\) = 0\.99N/);
-  assert.match(source, /hotspot-archery-state-v5/);
+  assert.match(source, /hotspot-archery-state-v6/);
+  assert.doesNotMatch(source, /round\.shots\.slice/);
 });
