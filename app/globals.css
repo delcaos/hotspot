@@ -178,6 +178,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .search-pin { position: absolute; z-index: 4; width: 6px; height: 6px; border: 1px solid var(--paper); border-radius: 50%; background: var(--ink); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(27,27,23,.55); pointer-events: none; transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; }
 .search-pin.possible { opacity: .78; }
 .search-pin.eliminated { opacity: .16; transform: translate(-50%,-50%) scale(.62); }
+.search-pin.used { opacity: 1; background: var(--red); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink); }
 .search-pin.aimed { opacity: 1; transform: translate(-50%,-50%) scale(1.8); background: var(--acid); box-shadow: 0 0 0 2px var(--ink), 0 0 0 5px rgba(215,239,53,.44); }
 
 .aim-reticle { position: absolute; z-index: 10; width: 28px; height: 28px; border: 1px solid var(--acid); border-radius: 50%; transform: translate(-50%,-50%); pointer-events: none; filter: drop-shadow(0 0 2px var(--ink)); }

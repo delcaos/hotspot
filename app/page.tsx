@@ -353,6 +353,7 @@ export default function Home() {
     round.hotspot.profile,
   );
   const capturedShot = round.shots.find((shot) => shot.result === "hit") ?? null;
+  const usedPointIds = new Set(round.shots.map((shot) => shot.id));
   const roundNet = round.shots.reduce((sum, shot) => sum + shot.net, 0);
   const roundReturned = round.shots.reduce((sum, shot) => sum + shot.returned, 0);
   const realizedRtp = round.shots.length
@@ -370,6 +371,10 @@ export default function Home() {
     }
 
     const selected = nearestSearchPoint(point);
+    if (usedPointIds.has(selected.id)) {
+      setNotice("That slot already holds an arrow. Choose an open pin—no credits were charged.");
+      return;
+    }
     const isPossible = round.possibleIds.includes(selected.id);
     const isHit = isPossible && selected.id === round.hotspot.pointId;
     const bands = heatBandsForAim(selected.id, round.possibleIds);
@@ -581,9 +586,10 @@ export default function Home() {
 
               {SEARCH_POINTS.map((point) => {
                 const possible = round.possibleIds.includes(point.id);
+                const used = usedPointIds.has(point.id);
                 return (
                   <span
-                    className={`search-pin ${possible ? "possible" : "eliminated"} ${aimPoint.id === point.id && !round.finished ? "aimed" : ""}`}
+                    className={`search-pin ${possible ? "possible" : "eliminated"} ${used ? "used" : ""} ${aimPoint.id === point.id && !round.finished && !used ? "aimed" : ""}`}
                     key={point.id}
                     style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
                   />
@@ -732,7 +738,7 @@ export default function Home() {
               <div><span>GOOD SHOT</span><strong>a ∈ S</strong><p>Aim at any point that remains possible.</p></div>
               <div><span>HIT CHANCE</span><strong>1 / N</strong><p>The secret is uniform over the surviving set.</p></div>
               <div><span>EVERY MISS</span><strong>0.00–0.95×</strong><p>Most are nearly zero; rare bursts create the extreme variance.</p></div>
-              <div><span>BAD REPEAT</span><strong>DUST / BURST</strong><p>The same volatile miss draw, with no new information.</p></div>
+              <div><span>USED SLOT</span><strong>BLOCKED</strong><p>An occupied pin cannot be fired at again and costs nothing.</p></div>
             </div>
             <p className="math-note">Here m(a,h) is the expected miss return, including its dust-or-burst draw. For a fresh possible point, E[M] = [J(a) + Σm(a,h)] / N = 0.99 exactly. Adaptive distance buckets keep each surviving set uniform and stop clues from collapsing the jackpot straight to 1×.</p>
             <button type="button" className="close-primary" onClick={() => setShowRules(false)}>BACK TO THE RANGE</button>

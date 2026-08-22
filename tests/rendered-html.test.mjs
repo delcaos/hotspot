@@ -56,4 +56,5 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.match(source, /J\(a\) = 0\.99N/);
   assert.match(source, /hotspot-archery-state-v6/);
   assert.doesNotMatch(source, /round\.shots\.slice/);
+  assert.match(source, /if \(usedPointIds\.has\(selected\.id\)\)/);
 });
