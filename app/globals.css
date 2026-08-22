@@ -175,10 +175,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .groove-two { inset: 37%; }
 .groove-three { inset: 47%; }
 
-.search-pin { position: absolute; z-index: 4; width: 9px; height: 9px; border: 1px solid var(--paper); border-radius: 50%; background: var(--ink); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(27,27,23,.55); pointer-events: none; transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; }
-.search-pin:not(.used) { z-index: 12; border: 2px solid var(--ink); background: var(--acid); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px rgba(27,27,23,.9), 0 0 8px rgba(215,239,53,.7); }
+.search-pin { position: absolute; z-index: 4; width: 7px; height: 7px; border: 1px solid var(--paper); border-radius: 50%; background: var(--ink); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(27,27,23,.55); pointer-events: none; transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease; }
+.search-pin:not(.used) { z-index: 12; border: 1px solid var(--ink); background: var(--acid); box-shadow: 0 0 0 1px var(--paper), 0 0 0 2px rgba(27,27,23,.82); }
 .search-pin.possible { opacity: .88; }
-.search-pin.likely:not(.used) { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink), 0 0 13px 4px rgba(215,239,53,.95); }
+.search-pin.likely:not(.used) { box-shadow: 0 0 0 1px var(--paper), 0 0 0 2px var(--ink), 0 0 7px 2px rgba(215,239,53,.8); }
 .search-pin.eliminated { opacity: .16; transform: translate(-50%,-50%) scale(.62); }
 .search-pin.used { z-index: 4; opacity: 1; background: var(--red); box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink); }
 .search-pin.aimed:not(.used) { z-index: 13; opacity: 1; transform: translate(-50%,-50%) scale(1.8); background: white; box-shadow: 0 0 0 2px var(--acid), 0 0 0 5px var(--ink), 0 0 16px 7px rgba(215,239,53,.88); }
@@ -364,10 +364,10 @@ footer { width: min(1560px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 
   .arrow-mark > em { font-size: 7px; }
   .jackpot-impact { top: 4%; min-width: 178px; padding: 6px 10px 8px; }
   .jackpot-impact strong { font-size: 36px; }
-  .open-slot-helper { min-height: 44px; }
-  .open-slot-helper > span { max-width: 135px; line-height: 1.35; }
-  .round-controls { align-items: stretch; }
-  .open-slot-helper button { max-width: 105px; padding: 6px; line-height: 1.2; }
+  .open-slot-helper { min-height: 44px; padding: 8px 0; display: grid; grid-template-columns: 1fr; }
+  .open-slot-helper > span { max-width: none; line-height: 1.35; text-align: center; }
+  .round-controls { width: 100%; display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; }
+  .open-slot-helper button { width: 100%; max-width: none; padding: 7px 6px; line-height: 1.2; }
   .search-row { grid-template-columns: 1fr 1fr; }
   .search-row > div { padding: 8px; }
   .search-row > div:nth-child(n+3) { border-top: 1px solid var(--line); }

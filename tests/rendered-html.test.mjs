@@ -64,4 +64,6 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.match(source, /round\.shots\.length - 6/);
   assert.match(source, /RESET ROUND/);
   assert.match(source, /function resetRound\(\)/);
+  assert.match(source, /const fieldConfidence = Math\.min\(1, informationGain \/ 2\.5\)/);
+  assert.match(source, /fieldConfidence > 0\.08 && relativeProbability >= 0\.6/);
 });

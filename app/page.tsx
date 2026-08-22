@@ -423,6 +423,7 @@ export default function Home() {
   const currentEntropy = posteriorEntropy(round.posterior);
   const openingEntropy = Math.log2(SEARCH_POINTS.length);
   const informationGain = openingEntropy - currentEntropy;
+  const fieldConfidence = Math.min(1, informationGain / 2.5);
   const topProbability = Math.max(...round.posterior);
   const aimProbability = round.posterior[aimPoint.id];
   const aimedReward = usedPointIds.has(aimPoint.id)
@@ -704,15 +705,17 @@ export default function Home() {
                 const relativeProbability = topProbability > 0
                   ? round.posterior[point.id] / topProbability
                   : 0;
+                const posteriorEmphasis = fieldConfidence * Math.sqrt(relativeProbability);
+                const likely = fieldConfidence > 0.08 && relativeProbability >= 0.6;
                 return (
                   <span
-                    className={`search-pin ${relativeProbability >= 0.6 ? "likely" : "possible"} ${used ? "used" : ""} ${aimed ? "aimed" : ""}`}
+                    className={`search-pin ${likely ? "likely" : "possible"} ${used ? "used" : ""} ${aimed ? "aimed" : ""}`}
                     key={point.id}
                     style={{
                       left: `${point.x * 100}%`,
                       top: `${point.y * 100}%`,
-                      opacity: used ? 1 : 0.68 + 0.32 * Math.sqrt(relativeProbability),
-                      transform: `translate(-50%,-50%) scale(${aimed ? 1.8 : used ? 1 : 0.88 + 0.62 * Math.sqrt(relativeProbability)})`,
+                      opacity: used ? 1 : 0.62 + 0.38 * posteriorEmphasis,
+                      transform: `translate(-50%,-50%) scale(${aimed ? 1.8 : used ? 1 : 0.78 + 0.72 * posteriorEmphasis})`,
                     }}
                   />
                 );
