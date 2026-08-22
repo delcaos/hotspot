@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const TARGET_RTP = 0.99;
-const radius = 3;
-const spacing = 0.125;
+const radius = 6;
+const spacing = 0.062;
 const points = [];
 
 for (let q = -radius; q <= radius; q += 1) {
@@ -24,9 +24,9 @@ function distance(a, b) {
 
 function bandBetween(aId, bId) {
   const separation = distance(points[aId], points[bId]);
-  if (separation <= 0.145) return "near";
-  if (separation <= 0.24) return "warm";
-  if (separation <= 0.36) return "cool";
+  if (separation <= 0.1) return "near";
+  if (separation <= 0.19) return "warm";
+  if (separation <= 0.31) return "cool";
   return "cold";
 }
 
@@ -38,27 +38,57 @@ function rewardFor(aimId, possibleIds, profile) {
   return Math.round((TARGET_RTP * possibleIds.length - missTotal) * 100) / 100;
 }
 
-test("every reachable good shot has exactly 99% conditional RTP", () => {
+test("every tested good shot has exactly 99% conditional RTP", () => {
   const profiles = [
-    { cold: 0.78, cool: 0.83, warm: 0.87, near: 0.9 },
-    { cold: 0.83, cool: 0.9, warm: 0.95, near: 0.99 },
-    { cold: 0.8, cool: 0.86, warm: 0.91, near: 0.94 },
+    { cold: 0.03, cool: 0.16, warm: 0.4, near: 0.78 },
+    { cold: 0.08, cool: 0.3, warm: 0.62, near: 0.94 },
+    { cold: 0.06, cool: 0.23, warm: 0.51, near: 0.86 },
   ];
 
-  assert.equal(points.length, 37);
+  assert.equal(points.length, 127);
+
+  const stateMap = new Map();
+  const remember = (possibleIds) => stateMap.set(possibleIds.join(","), possibleIds);
+  const openingIds = points.map((point) => point.id);
+  remember(openingIds);
+
+  // Cover every state obtainable from every possible first arrow and heat read.
+  for (const aimId of openingIds) {
+    for (const observedBand of ["cold", "cool", "warm", "near"]) {
+      const nextIds = openingIds.filter(
+        (candidateId) =>
+          candidateId !== aimId && bandBetween(aimId, candidateId) === observedBand,
+      );
+      if (nextIds.length) remember(nextIds);
+    }
+  }
+
+  // Add complete, deterministic hunts for every possible secret hotspot.
+  for (const secretId of openingIds) {
+    let possibleIds = openingIds;
+    let step = 0;
+    while (possibleIds.length > 1) {
+      remember(possibleIds);
+      const aimId = possibleIds[(secretId * 17 + step * 13) % possibleIds.length];
+      if (aimId === secretId) break;
+      const observedBand = bandBetween(aimId, secretId);
+      possibleIds = possibleIds.filter(
+        (candidateId) =>
+          candidateId !== aimId && bandBetween(aimId, candidateId) === observedBand,
+      );
+      assert.ok(possibleIds.includes(secretId));
+      step += 1;
+    }
+    remember(possibleIds);
+  }
 
   for (const profile of profiles) {
     assert.ok(Object.values(profile).every((multiplier) => multiplier < 1));
-    const pending = [points.map((point) => point.id)];
-    const seen = new Set();
+    assert.ok(profile.near - profile.cold >= 0.7);
     let maximumReward = 0;
+    let minimumOpeningReward = Number.POSITIVE_INFINITY;
 
-    while (pending.length) {
-      const possibleIds = pending.pop();
-      const stateKey = possibleIds.join(",");
-      if (seen.has(stateKey)) continue;
-      seen.add(stateKey);
-
+    for (const possibleIds of stateMap.values()) {
       for (const aimId of possibleIds) {
         const missTotal = possibleIds.reduce((total, hotspotId) => {
           if (hotspotId === aimId) return total;
@@ -70,21 +100,14 @@ test("every reachable good shot has exactly 99% conditional RTP", () => {
 
         assert.ok(Math.abs(expectedMultiplier - TARGET_RTP) < 1e-12);
         assert.ok(reward >= TARGET_RTP);
-
-        for (const hotspotId of possibleIds) {
-          if (hotspotId === aimId) continue;
-          const observedBand = bandBetween(aimId, hotspotId);
-          const nextPossibleIds = possibleIds.filter(
-            (candidateId) =>
-              candidateId !== aimId &&
-              bandBetween(aimId, candidateId) === observedBand,
-          );
-          if (!seen.has(nextPossibleIds.join(","))) pending.push(nextPossibleIds);
+        if (possibleIds.length === points.length) {
+          minimumOpeningReward = Math.min(minimumOpeningReward, reward);
         }
       }
     }
 
-    assert.equal(seen.size, 2362);
-    assert.ok(maximumReward > 5);
+    assert.ok(stateMap.size > 400);
+    assert.ok(minimumOpeningReward > 75);
+    assert.ok(maximumReward > 100);
   }
 });

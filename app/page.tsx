@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
-const STORAGE_KEY = "hotspot-archery-state-v4";
+const STORAGE_KEY = "hotspot-archery-state-v5";
 const LEGACY_STORAGE_KEYS = [
   "fourtune-vaults-state-v1",
   "hotspot-archery-state-v1",
   "hotspot-archery-state-v2",
   "hotspot-archery-state-v3",
+  "hotspot-archery-state-v4",
 ];
 const ARROW_STAKE = 10;
 const TARGET_RTP = 0.99;
@@ -48,7 +49,7 @@ type Round = {
 };
 
 type GameState = {
-  version: 4;
+  version: 5;
   balance: number;
   round: Round;
   sound: boolean;
@@ -65,8 +66,8 @@ type GameState = {
 
 function buildSearchPoints() {
   const points: SearchPoint[] = [];
-  const radius = 3;
-  const spacing = 0.125;
+  const radius = 6;
+  const spacing = 0.062;
 
   for (let q = -radius; q <= radius; q += 1) {
     const minR = Math.max(-radius, -q - radius);
@@ -104,10 +105,10 @@ function round2(value: number) {
 }
 
 function createRewardProfile(): RewardProfile {
-  const cold = round2(randomBetween(0.78, 0.83));
-  const cool = round2(cold + randomBetween(0.05, 0.07));
-  const warm = round2(cool + randomBetween(0.04, 0.05));
-  const near = Math.min(0.99, round2(warm + randomBetween(0.025, 0.035)));
+  const cold = round2(randomBetween(0.03, 0.08));
+  const cool = round2(randomBetween(0.16, 0.3));
+  const warm = round2(randomBetween(0.4, 0.62));
+  const near = round2(randomBetween(0.78, 0.94));
   return { cold, cool, warm, near };
 }
 
@@ -127,9 +128,9 @@ function nearestSearchPoint(point: Point) {
 
 function heatBandBetween(a: SearchPoint, b: SearchPoint): HeatBand {
   const separation = distance(a, b);
-  if (separation <= 0.145) return "near";
-  if (separation <= 0.24) return "warm";
-  if (separation <= 0.36) return "cool";
+  if (separation <= 0.1) return "near";
+  if (separation <= 0.19) return "warm";
+  if (separation <= 0.31) return "cool";
   return "cold";
 }
 
@@ -170,7 +171,7 @@ function createRound(id: number): Round {
 
 function createGame(): GameState {
   return {
-    version: 4,
+    version: 5,
     balance: 500,
     round: createRound(1),
     sound: true,
@@ -200,10 +201,10 @@ function resultLabel(result: Shot["result"]) {
 }
 
 function rewardQuality(multiplier: number) {
-  if (multiplier >= 6) return "ELITE";
-  if (multiplier >= 4.5) return "RICH";
-  if (multiplier >= 3) return "SOLID";
-  return "LEAN";
+  if (multiplier >= 100) return "LEGENDARY";
+  if (multiplier >= 80) return "MASSIVE";
+  if (multiplier >= 50) return "RICH";
+  return "VOLATILE";
 }
 
 function profileVariance(profile: RewardProfile) {
@@ -213,8 +214,9 @@ function profileVariance(profile: RewardProfile) {
 }
 
 function varianceLabel(variance: number) {
-  if (variance >= 0.004) return "HIGH";
-  if (variance >= 0.002) return "MEDIUM";
+  if (variance >= 0.075) return "EXTREME";
+  if (variance >= 0.04) return "WILD";
+  if (variance >= 0.015) return "HIGH";
   return "LOW";
 }
 
@@ -249,7 +251,7 @@ export default function Home() {
   const [game, setGame] = useState<GameState | null>(null);
   const [aim, setAim] = useState<Point>({ x: 0.5, y: 0.5 });
   const [notice, setNotice] = useState(
-    "Pick a search pin. Misses cost a little, but every result narrows the field.",
+    "Pick a search pin. Misses swing hard, but every result narrows the field.",
   );
   const [showRules, setShowRules] = useState(false);
 
@@ -260,7 +262,7 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
-          if (parsed.version === 4 && parsed.round?.hotspot) {
+          if (parsed.version === 5 && parsed.round?.hotspot) {
             setGame(parsed);
             setNotice(
               parsed.round.finished
@@ -492,8 +494,8 @@ export default function Home() {
           <h1>UNLIMITED ARROWS.<br /><em>ONE HOTSPOT.</em></h1>
         </div>
         <p className="intro">
-          Hunt one exact point among 37 pins. Every miss loses a little and tells
-          you how far away you are. Find it quickly to preserve the richest prize.
+          Hunt one exact point among 127 pins. Misses can hit brutally different
+          returns. Find it quickly while the hotspot jackpot is still enormous.
         </p>
       </section>
 
@@ -506,7 +508,7 @@ export default function Home() {
             <h2>FOLLOW THE HEAT. RULE OUT PINS. HIT FAST.</h2>
             <ol>
               <li><b>01</b><span>Fire at any search pin.</span></li>
-              <li><b>02</b><span>Nearer misses pay closer to 1×.</span></li>
+              <li><b>02</b><span>Near misses cushion you. Cold misses hit hard.</span></li>
               <li><b>03</b><span>Use fresh evidence; repeats cost.</span></li>
             </ol>
           </div>
@@ -535,7 +537,7 @@ export default function Home() {
             <button
               type="button"
               className={`target-board ${round.finished ? "is-revealed" : ""}`}
-              aria-label="Archery target with 37 search pins. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
+              aria-label="Archery target with 127 search pins. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
               onPointerMove={handlePointerMove}
               onPointerDown={handlePointerDown}
               onKeyDown={handleTargetKey}
@@ -576,7 +578,7 @@ export default function Home() {
                 <span className="aim-reticle" style={{ left: `${aimPoint.x * 100}%`, top: `${aimPoint.y * 100}%` }}><i /></span>
               )}
             </button>
-            <span className="target-caption caption-left">37 EXACT PINS</span>
+            <span className="target-caption caption-left">127 EXACT PINS</span>
             <span className="target-caption caption-right">RANGE 07</span>
           </div>
 
@@ -677,7 +679,7 @@ export default function Home() {
             <div className="parameter-grid">
               <div><span>GOOD SHOT</span><strong>a ∈ S</strong><p>Aim at any point that remains possible.</p></div>
               <div><span>HIT CHANCE</span><strong>1 / N</strong><p>The secret is uniform over the surviving set.</p></div>
-              <div><span>EVERY MISS</span><strong>0.78–0.99×</strong><p>The randomized heat curve is always below break-even.</p></div>
+              <div><span>EVERY MISS</span><strong>0.03–0.94×</strong><p>The extreme randomized heat curve is always below break-even.</p></div>
               <div><span>BAD REPEAT</span><strong>0.96×</strong><p>A gentle penalty with no new information.</p></div>
             </div>
             <p className="math-note">For a fresh possible point, E[M] = [J(a) + Σm(a,h)] / N = 0.99 exactly. After a miss, the observed heat band creates a smaller uniform possibility set, so the same proof applies again. Strategy changes how many wagers you need—not the 99% expected return of a well-chosen arrow.</p>
