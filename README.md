@@ -1,7 +1,7 @@
 # Hotspot
 
 A fully client-side, play-money archery deduction game. Every round hides one
-exact hotspot among 127 target pins. Arrows are unlimited: misses always return
+exact hotspot among 217 full-board target pins. Arrows are unlimited: misses always return
 less than 1×, reveal a distance band, and reduce the set of possible points.
 The round ends only when the hotspot is hit.
 
@@ -15,7 +15,7 @@ npm run dev
 Open `http://localhost:3000`.
 
 All fake balances, round progress, and stats live in browser `localStorage`
-under `hotspot-archery-state-v6`. There are no accounts, deposits, withdrawals,
+under `hotspot-archery-state-v7`. There are no accounts, deposits, withdrawals,
 or cash-value rewards.
 
 ## 99% good-play RTP
@@ -38,9 +38,10 @@ E[multiplier | good shot]
   = 0.99
 ```
 
-Actual misses use a heavy-tailed dust-or-burst distribution. Most return one of
-`0.00×`, `0.01×`, or `0.02×`; rare bursts return `0.55×`–`0.95×`. Hotter bands
-raise the burst probability, while every outcome remains below 1×. Adaptive
+Actual misses use a heavy-tailed dust-or-burst distribution. Returns are either
+`0.00×`–`0.02×` dust or `0.55×`–`0.95×` bursts. Cold shots burst only about
+1%–4% of the time, compared with roughly 80%–100% for near shots, so the payout
+itself leaks meaningful distance information. Every outcome remains below 1×. Adaptive
 distance-rank buckets keep the secret uniform within the surviving candidates
 without letting one clue collapse the jackpot immediately to 1×. A shot at a
 point already ruled out uses the cold dust-or-burst draw and provides no new

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
-const STORAGE_KEY = "hotspot-archery-state-v6";
+const STORAGE_KEY = "hotspot-archery-state-v7";
 const LEGACY_STORAGE_KEYS = [
   "fourtune-vaults-state-v1",
   "hotspot-archery-state-v1",
@@ -11,6 +11,7 @@ const LEGACY_STORAGE_KEYS = [
   "hotspot-archery-state-v3",
   "hotspot-archery-state-v4",
   "hotspot-archery-state-v5",
+  "hotspot-archery-state-v6",
 ];
 const ARROW_STAKE = 10;
 const TARGET_RTP = 0.99;
@@ -54,7 +55,7 @@ type Round = {
 };
 
 type GameState = {
-  version: 6;
+  version: 7;
   balance: number;
   round: Round;
   sound: boolean;
@@ -71,8 +72,8 @@ type GameState = {
 
 function buildSearchPoints() {
   const points: SearchPoint[] = [];
-  const radius = 6;
-  const spacing = 0.062;
+  const radius = 8;
+  const spacing = 0.058;
 
   for (let q = -radius; q <= radius; q += 1) {
     const minR = Math.max(-radius, -q - radius);
@@ -111,9 +112,9 @@ function round2(value: number) {
 
 function createRewardProfile(): RewardProfile {
   const cold = round2(randomBetween(0.02, 0.04));
-  const cool = round2(randomBetween(0.05, 0.08));
-  const warm = round2(randomBetween(0.1, 0.14));
-  const near = round2(randomBetween(0.17, 0.22));
+  const cool = round2(randomBetween(0.12, 0.18));
+  const warm = round2(randomBetween(0.32, 0.45));
+  const near = round2(randomBetween(0.6, 0.75));
   return { cold, cool, warm, near };
 }
 
@@ -200,7 +201,7 @@ function createRound(id: number): Round {
 
 function createGame(): GameState {
   return {
-    version: 6,
+    version: 7,
     balance: 500,
     round: createRound(1),
     sound: true,
@@ -286,7 +287,7 @@ export default function Home() {
   const [game, setGame] = useState<GameState | null>(null);
   const [aim, setAim] = useState<Point>({ x: 0.5, y: 0.5 });
   const [notice, setNotice] = useState(
-    "Pick a search pin. Most misses return dust; rare misses burst as high as 0.95×.",
+    "Pick a search pin. Far misses pay dust; rising payouts signal you are closing in.",
   );
   const [showRules, setShowRules] = useState(false);
 
@@ -297,7 +298,7 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
-          if (parsed.version === 6 && parsed.round?.hotspot) {
+          if (parsed.version === 7 && parsed.round?.hotspot) {
             setGame(parsed);
             setNotice(
               parsed.round.finished
@@ -530,8 +531,8 @@ export default function Home() {
           <h1>UNLIMITED ARROWS.<br /><em>ONE HOTSPOT.</em></h1>
         </div>
         <p className="intro">
-          Hunt one exact point among 127 pins. Most misses pay 0.00–0.02×; rare
-          bursts jump as high as 0.95×. Hit the hotspot for the real jackpot.
+          Hunt one exact point among 217 pins spread across the whole target.
+          Payouts rise sharply as you close in, turning every return into a clue.
         </p>
       </section>
 
@@ -544,7 +545,7 @@ export default function Home() {
             <h2>FOLLOW THE HEAT. RULE OUT PINS. HIT FAST.</h2>
             <ol>
               <li><b>01</b><span>Fire at any search pin.</span></li>
-              <li><b>02</b><span>Heat changes the odds of a rare payout burst.</span></li>
+              <li><b>02</b><span>Higher payouts leak that the hotspot is closer.</span></li>
               <li><b>03</b><span>Every arrow remains pinned until the reveal.</span></li>
             </ol>
           </div>
@@ -574,7 +575,7 @@ export default function Home() {
               type="button"
               className={`target-board ${round.finished ? "is-revealed" : ""}`}
               style={{ "--hit-x": `${hotspotPoint.x * 100}%`, "--hit-y": `${hotspotPoint.y * 100}%` } as CSSProperties}
-              aria-label="Archery target with 127 search pins. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
+              aria-label="Archery target with 217 search pins across the full board. Use pointer to aim and fire, or arrow keys to move the aim point and Enter to fire."
               onPointerMove={handlePointerMove}
               onPointerDown={handlePointerDown}
               onKeyDown={handleTargetKey}
@@ -635,7 +636,7 @@ export default function Home() {
                 <span className="aim-reticle" style={{ left: `${aimPoint.x * 100}%`, top: `${aimPoint.y * 100}%` }}><i /></span>
               )}
             </button>
-            <span className="target-caption caption-left">127 EXACT PINS</span>
+            <span className="target-caption caption-left">217 FULL-BOARD PINS</span>
             <span className="target-caption caption-right">RANGE 07</span>
           </div>
 
@@ -701,7 +702,7 @@ export default function Home() {
           ) : (
             <div className="live-tip">
               <span>RANGE NOTE</span>
-              <p>Hotter reads make a rare payout burst more likely. Every fresh possible pin is exactly 99% EV; your edge is needing fewer wagers to solve the board.</p>
+              <p>Cold returns average 0.02–0.04×; near returns average 0.60–0.75×. Every payout leaks distance while each fresh possible pin remains exactly 99% EV.</p>
             </div>
           )}
 
@@ -729,7 +730,7 @@ export default function Home() {
             <button type="button" className="modal-close" onClick={() => setShowRules(false)} aria-label="Close">×</button>
             <span className="modal-kicker">THE 99% PROOF</span>
             <h2 id="math-title">EVERY GOOD SHOT.<br />EXACTLY 99% EV.</h2>
-            <p>The hotspot is one exact point among the pins still consistent with your previous heat readings. Each miss returns either dust at 0.00–0.02× or a rare burst from 0.55–0.95×. Hotter reads make a burst more likely.</p>
+            <p>The hotspot is one exact point among the pins still consistent with your previous heat readings. Each miss returns either dust at 0.00–0.02× or a burst from 0.55–0.95×. Cold shots almost always return dust; near shots burst roughly 80%–100% of the time.</p>
             <div className="formula">
               <small>JACKPOT FOR AIM POINT a WITH N POSSIBILITIES</small>
               <strong>J(a) = 0.99N − Σ<sub>h ≠ a</sub> m(a,h)</strong>
@@ -737,7 +738,7 @@ export default function Home() {
             <div className="parameter-grid">
               <div><span>GOOD SHOT</span><strong>a ∈ S</strong><p>Aim at any point that remains possible.</p></div>
               <div><span>HIT CHANCE</span><strong>1 / N</strong><p>The secret is uniform over the surviving set.</p></div>
-              <div><span>EVERY MISS</span><strong>0.00–0.95×</strong><p>Most are nearly zero; rare bursts create the extreme variance.</p></div>
+              <div><span>EVERY MISS</span><strong>0.00–0.95×</strong><p>Far shots usually dust; hotter shots burst dramatically more often.</p></div>
               <div><span>USED SLOT</span><strong>BLOCKED</strong><p>An occupied pin cannot be fired at again and costs nothing.</p></div>
             </div>
             <p className="math-note">Here m(a,h) is the expected miss return, including its dust-or-burst draw. For a fresh possible point, E[M] = [J(a) + Σm(a,h)] / N = 0.99 exactly. Adaptive distance buckets keep each surviving set uniform and stop clues from collapsing the jackpot straight to 1×.</p>
