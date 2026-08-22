@@ -66,4 +66,8 @@ test("builds a self-contained GitHub Pages site at the project path", async () =
   assert.match(source, /function resetRound\(\)/);
   assert.match(source, /const fieldConfidence = Math\.min\(1, informationGain \/ 2\.5\)/);
   assert.match(source, /fieldConfidence > 0\.08 && relativeProbability >= 0\.6/);
+  assert.match(source, /const INITIAL_BALANCE = 500/);
+  assert.match(source, /const autoRefilled = game\.balance < ARROW_STAKE/);
+  assert.match(source, /disabled=\{round\.finished\}/);
+  assert.doesNotMatch(source, /disabled=\{round\.finished \|\| game\.balance < ARROW_STAKE\}/);
 });

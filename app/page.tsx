@@ -15,6 +15,7 @@ const LEGACY_STORAGE_KEYS = [
   "hotspot-archery-state-v7",
 ];
 const ARROW_STAKE = 10;
+const INITIAL_BALANCE = 500;
 const TARGET_RTP = 0.99;
 const TARGET_RADIUS = 0.495;
 const PAYOUT_VALUES = [0, 0.01, 0.02, 0.08, 0.25, 0.55, 0.75, 0.95] as const;
@@ -285,7 +286,7 @@ function createRound(id: number): Round {
 function createGame(): GameState {
   return {
     version: 8,
-    balance: 500,
+    balance: INITIAL_BALANCE,
     round: createRound(1),
     sound: true,
     stats: {
@@ -457,7 +458,7 @@ export default function Home() {
   }
 
   function shoot(point: Point) {
-    if (!game || game.round.finished || game.balance < ARROW_STAKE) return;
+    if (!game || game.round.finished) return;
     if (distance(point, { x: 0.5, y: 0.5 }) > TARGET_RADIUS) {
       setNotice("That aim sits outside the target. Pull it inside the outer ring.");
       return;
@@ -468,6 +469,10 @@ export default function Home() {
       setNotice("That slot already holds an arrow. Choose an open pin—no credits were charged.");
       return;
     }
+    const autoRefilled = game.balance < ARROW_STAKE;
+    const fundedBalance = autoRefilled
+      ? round2(game.balance + INITIAL_BALANCE)
+      : game.balance;
     const isHit = selected.id === round.hotspot.pointId;
     const rewardOnAim = captureReward(
       selected.id,
@@ -525,7 +530,7 @@ export default function Home() {
 
     setGame({
       ...game,
-      balance: round2(game.balance + net),
+      balance: round2(fundedBalance + net),
       round: {
         ...round,
         posterior: nextPosterior,
@@ -544,16 +549,18 @@ export default function Home() {
             ? shotNumber
             : Math.min(game.stats.bestFind, shotNumber)
           : game.stats.bestFind,
+        refills: game.stats.refills + (autoRefilled ? 1 : 0),
       },
     });
 
     playTone(game.sound, result, multiplier);
+    const refillMessage = autoRefilled ? `AUTO +${INITIAL_BALANCE} DEMO CREDITS · ` : "";
     if (isHit) {
-      setNotice(`Bullseye found in ${shotNumber} arrows — ${multiplier.toFixed(2)}× captured.`);
+      setNotice(`${refillMessage}Bullseye found in ${shotNumber} arrows — ${multiplier.toFixed(2)}× captured.`);
     } else {
       const nextLeader = Math.max(...nextPosterior);
       setNotice(
-        `${multiplier.toFixed(2)}× ${result} signal — entropy ${entropyBefore.toFixed(2)} → ${entropyAfter.toFixed(2)} bits; leader ${(nextLeader * 100).toFixed(1)}%.`,
+        `${refillMessage}${multiplier.toFixed(2)}× ${result} signal — entropy ${entropyBefore.toFixed(2)} → ${entropyAfter.toFixed(2)} bits; leader ${(nextLeader * 100).toFixed(1)}%.`,
       );
     }
   }
@@ -603,9 +610,20 @@ export default function Home() {
     if (
       !round.finished &&
       round.shots.length > 0 &&
-      !window.confirm("Abandon this hunt and clear every arrow? Spent credits and lifetime stats will stay.")
+      !window.confirm("Abandon this hunt and clear every arrow? Your balance will be restored to at least 500 demo credits.")
     ) return;
-    startNextRound();
+    const restoredBalance = Math.max(game.balance, INITIAL_BALANCE);
+    setGame({
+      ...game,
+      balance: restoredBalance,
+      round: createRound(round.id + 1),
+      stats: {
+        ...game.stats,
+        refills: game.stats.refills + (restoredBalance > game.balance ? 1 : 0),
+      },
+    });
+    setAim({ x: 0.5, y: 0.5 });
+    setNotice("Fresh target. Balance ready, arrows cleared, and a new hotspot is waiting.");
   }
 
   function refill() {
@@ -693,7 +711,7 @@ export default function Home() {
               onPointerMove={handlePointerMove}
               onPointerDown={handlePointerDown}
               onKeyDown={handleTargetKey}
-              disabled={round.finished || game.balance < ARROW_STAKE}
+              disabled={round.finished}
             >
               <span className="ring-groove groove-one" />
               <span className="ring-groove groove-two" />
