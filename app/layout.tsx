@@ -4,7 +4,7 @@ import "./globals.css";
 
 const title = "Hotspot — Every Arrow Costs. Find It Fast.";
 const description =
-  "A play-money archery deduction game. Fire unlimited arrows, use sub-1× heat readings to isolate one exact point, and capture its randomized reward.";
+  "A Bayesian archery hunt where every sub-1× payout updates a 217-pin posterior field and every open shot is exactly 99% EV.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

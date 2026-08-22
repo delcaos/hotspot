@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const TARGET_RTP = 0.99;
-const MIN_HEAT_BUCKET = 16;
-const DUST_PAYOUTS = [0, 0.01, 0.02];
-const BURST_PAYOUTS = [0.55, 0.65, 0.75, 0.85, 0.95];
-const DUST_MEAN = 0.01;
-const BURST_MEAN = 0.75;
+const PAYOUT_VALUES = [0, 0.01, 0.02, 0.08, 0.25, 0.55, 0.75, 0.95];
+const COLD_LIKELIHOOD = [0.68, 0.18, 0.08, 0.035, 0.015, 0.006, 0.003, 0.001];
+const HOT_LIKELIHOOD = [0.03, 0.04, 0.05, 0.08, 0.15, 0.23, 0.23, 0.19];
 const radius = 8;
 const spacing = 0.058;
 const points = [];
@@ -27,143 +25,160 @@ function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function bandsForAim(aimId, possibleIds) {
-  const candidates = possibleIds
-    .filter((possibleId) => possibleId !== aimId)
-    .sort((aId, bId) => {
-      const separation = distance(points[aimId], points[aId]) - distance(points[aimId], points[bId]);
-      return separation || aId - bId;
-    });
-  const bandCount = Math.min(
-    4,
-    Math.max(1, Math.floor(candidates.length / MIN_HEAT_BUCKET)),
+function payoutProbabilities(aimId, hotspotId, profile) {
+  const separation = distance(points[aimId], points[hotspotId]);
+  const gaussian = Math.exp(-(separation ** 2) / (2 * profile.radius ** 2));
+  const heat = profile.noise + (1 - profile.noise) * gaussian ** profile.sharpness;
+  return COLD_LIKELIHOOD.map(
+    (coldProbability, index) =>
+      (1 - heat) * coldProbability + heat * HOT_LIKELIHOOD[index],
   );
-  const labels = {
-    1: ["cold"],
-    2: ["near", "cold"],
-    3: ["near", "warm", "cold"],
-    4: ["near", "warm", "cool", "cold"],
-  };
-  const bands = new Map();
+}
 
-  candidates.forEach((candidateId, index) => {
-    const bucket = Math.min(
-      bandCount - 1,
-      Math.floor((index * bandCount) / candidates.length),
+function expectedPayout(probabilities) {
+  return probabilities.reduce(
+    (total, probability, index) => total + probability * PAYOUT_VALUES[index],
+    0,
+  );
+}
+
+function captureReward(aimId, posterior, profile) {
+  const hitProbability = posterior[aimId];
+  if (hitProbability <= 0) return 0;
+  const missExpectation = posterior.reduce((total, probability, hotspotId) => {
+    if (hotspotId === aimId || probability === 0) return total;
+    return total + probability * expectedPayout(
+      payoutProbabilities(aimId, hotspotId, profile),
     );
-    bands.set(candidateId, labels[bandCount][bucket]);
-  });
-
-  return bands;
-}
-
-function rewardFor(aimId, possibleIds, profile) {
-  const bands = bandsForAim(aimId, possibleIds);
-  const missTotal = possibleIds.reduce((total, hotspotId) => {
-    if (hotspotId === aimId) return total;
-    return total + profile[bands.get(hotspotId)];
   }, 0);
-  return Math.round((TARGET_RTP * possibleIds.length - missTotal) * 100) / 100;
+  return (TARGET_RTP - missExpectation) / hitProbability;
 }
 
-test("dust-or-burst payouts preserve their configured means", () => {
-  const dustMean = DUST_PAYOUTS.reduce((total, value) => total + value, 0) / DUST_PAYOUTS.length;
-  const burstMean = BURST_PAYOUTS.reduce((total, value) => total + value, 0) / BURST_PAYOUTS.length;
+function updatePosterior(posterior, aimId, outcomeIndex, profile) {
+  const weights = posterior.map((prior, hotspotId) =>
+    hotspotId === aimId
+      ? 0
+      : prior * payoutProbabilities(aimId, hotspotId, profile)[outcomeIndex],
+  );
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map((weight) => weight / total);
+}
 
-  assert.equal(dustMean, DUST_MEAN);
-  assert.equal(burstMean, BURST_MEAN);
+function entropy(posterior) {
+  return posterior.reduce(
+    (total, probability) =>
+      probability > 0 ? total - probability * Math.log2(probability) : total,
+    0,
+  );
+}
 
-  for (const expectedMean of [0.02, 0.04, 0.12, 0.18, 0.32, 0.45, 0.6, 0.75]) {
-    const burstChance = (expectedMean - DUST_MEAN) / (BURST_MEAN - DUST_MEAN);
-    const reconstructedMean = (1 - burstChance) * DUST_MEAN + burstChance * BURST_MEAN;
-    assert.ok(Math.abs(reconstructedMean - expectedMean) < 1e-12);
-    assert.ok(burstChance >= 0 && burstChance <= 1);
-  }
-
-  const burstChance = (expectedMean) => (expectedMean - DUST_MEAN) / (BURST_MEAN - DUST_MEAN);
-  assert.ok(burstChance(0.04) < 0.05);
-  assert.ok(burstChance(0.18) > 0.2);
-  assert.ok(burstChance(0.45) > 0.59);
-  assert.ok(burstChance(0.6) > 0.79);
-  assert.equal(burstChance(0.75), 1);
-});
-
-test("every tested good shot has exactly 99% conditional RTP", () => {
-  const profiles = [
-    { cold: 0.02, cool: 0.12, warm: 0.32, near: 0.6 },
-    { cold: 0.04, cool: 0.18, warm: 0.45, near: 0.75 },
-    { cold: 0.03, cool: 0.15, warm: 0.39, near: 0.68 },
-  ];
-
+test("Gaussian payout likelihoods are normalized and spatially informative", () => {
   assert.equal(points.length, 217);
+  assert.ok(PAYOUT_VALUES.every((payout) => payout >= 0 && payout < 1));
+  assert.ok(Math.abs(COLD_LIKELIHOOD.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+  assert.ok(Math.abs(HOT_LIKELIHOOD.reduce((a, b) => a + b, 0) - 1) < 1e-12);
 
-  const stateMap = new Map();
-  const remember = (possibleIds) => stateMap.set(possibleIds.join(","), possibleIds);
-  const openingIds = points.map((point) => point.id);
-  remember(openingIds);
-
-  // Cover every state obtainable from every possible first arrow and heat read.
-  for (const aimId of openingIds) {
-    const bands = bandsForAim(aimId, openingIds);
-    for (const observedBand of ["cold", "cool", "warm", "near"]) {
-      const nextIds = openingIds.filter(
-        (candidateId) =>
-          candidateId !== aimId && bands.get(candidateId) === observedBand,
-      );
-      if (nextIds.length) {
-        assert.equal(nextIds.length, 54);
-        remember(nextIds);
-      }
-    }
-  }
-
-  // Add complete, deterministic hunts for every possible secret hotspot.
-  for (const secretId of openingIds) {
-    let possibleIds = openingIds;
-    let step = 0;
-    while (possibleIds.length > 1) {
-      remember(possibleIds);
-      const aimId = possibleIds[(secretId * 17 + step * 13) % possibleIds.length];
-      if (aimId === secretId) break;
-      const bands = bandsForAim(aimId, possibleIds);
-      const observedBand = bands.get(secretId);
-      possibleIds = possibleIds.filter(
-        (candidateId) =>
-          candidateId !== aimId && bands.get(candidateId) === observedBand,
-      );
-      assert.ok(possibleIds.includes(secretId));
-      step += 1;
-    }
-    remember(possibleIds);
-  }
+  const profiles = [
+    { radius: 0.11, noise: 0.02, sharpness: 0.85 },
+    { radius: 0.145, noise: 0.05, sharpness: 1.1 },
+    { radius: 0.18, noise: 0.08, sharpness: 1.35 },
+  ];
+  const centerId = points.find((point) => point.x === 0.5 && point.y === 0.5).id;
+  const others = points
+    .filter((point) => point.id !== centerId)
+    .sort((a, b) => distance(points[centerId], a) - distance(points[centerId], b));
 
   for (const profile of profiles) {
-    assert.ok(Object.values(profile).every((multiplier) => multiplier < 1));
-    assert.ok(profile.near - profile.cold >= 0.56);
-    let maximumReward = 0;
+    const near = payoutProbabilities(centerId, others[0].id, profile);
+    const far = payoutProbabilities(centerId, others.at(-1).id, profile);
+    assert.ok(Math.abs(near.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+    assert.ok(Math.abs(far.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+    assert.ok(expectedPayout(near) > expectedPayout(far) * 5);
+    assert.ok(near[7] > far[7] * 5);
+    assert.ok(far[0] > near[0]);
+  }
+});
+
+test("each payout performs a normalized Bayesian spatial update", () => {
+  const profile = { radius: 0.145, noise: 0.05, sharpness: 1.1 };
+  const prior = points.map(() => 1 / points.length);
+  const centerId = points.find((point) => point.x === 0.5 && point.y === 0.5).id;
+  const priorMeanDistance = prior.reduce(
+    (total, probability, id) => total + probability * distance(points[centerId], points[id]),
+    0,
+  );
+
+  const blazePosterior = updatePosterior(prior, centerId, 7, profile);
+  const blazeMeanDistance = blazePosterior.reduce(
+    (total, probability, id) => total + probability * distance(points[centerId], points[id]),
+    0,
+  );
+  assert.ok(Math.abs(blazePosterior.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+  assert.equal(blazePosterior[centerId], 0);
+  assert.ok(blazeMeanDistance < priorMeanDistance);
+  assert.ok(entropy(blazePosterior) < entropy(prior));
+
+  const dustPosterior = updatePosterior(prior, centerId, 0, profile);
+  const dustMeanDistance = dustPosterior.reduce(
+    (total, probability, id) => total + probability * distance(points[centerId], points[id]),
+    0,
+  );
+  assert.ok(dustMeanDistance > blazeMeanDistance);
+});
+
+test("every tested open pin has exactly 99% posterior-weighted RTP", () => {
+  const profiles = [
+    { radius: 0.11, noise: 0.02, sharpness: 0.85 },
+    { radius: 0.145, noise: 0.05, sharpness: 1.1 },
+    { radius: 0.18, noise: 0.08, sharpness: 1.35 },
+  ];
+  const secrets = [0, 31, 72, 108, 149, 185, 216];
+
+  for (const profile of profiles) {
     let minimumOpeningReward = Number.POSITIVE_INFINITY;
+    const openingPosterior = points.map(() => 1 / points.length);
+    for (const point of points) {
+      minimumOpeningReward = Math.min(
+        minimumOpeningReward,
+        captureReward(point.id, openingPosterior, profile),
+      );
+    }
+    assert.ok(minimumOpeningReward > 150);
 
-    for (const possibleIds of stateMap.values()) {
-      for (const aimId of possibleIds) {
-        const bands = bandsForAim(aimId, possibleIds);
-        const missTotal = possibleIds.reduce((total, hotspotId) => {
-          if (hotspotId === aimId) return total;
-          return total + profile[bands.get(hotspotId)];
-        }, 0);
-        const reward = rewardFor(aimId, possibleIds, profile);
-        const expectedMultiplier = (reward + missTotal) / possibleIds.length;
-        maximumReward = Math.max(maximumReward, reward);
+    for (const secretId of secrets) {
+      let posterior = openingPosterior;
+      const used = new Set();
 
-        assert.ok(Math.abs(expectedMultiplier - TARGET_RTP) < 1e-12);
-        assert.ok(reward >= TARGET_RTP);
-        if (possibleIds.length === points.length) {
-          minimumOpeningReward = Math.min(minimumOpeningReward, reward);
+      for (let step = 0; step < 12; step += 1) {
+        const candidates = points
+          .filter((point) => !used.has(point.id) && point.id !== secretId)
+          .sort((a, b) => posterior[b.id] - posterior[a.id]);
+        const aimId = candidates[0].id;
+
+        for (const testedAim of candidates.slice(0, 12)) {
+          const hitProbability = posterior[testedAim.id];
+          if (hitProbability <= 1e-14) continue;
+          const reward = captureReward(testedAim.id, posterior, profile);
+          const missExpectation = posterior.reduce((total, probability, hotspotId) => {
+            if (hotspotId === testedAim.id || probability === 0) return total;
+            return total + probability * expectedPayout(
+              payoutProbabilities(testedAim.id, hotspotId, profile),
+            );
+          }, 0);
+          const expectedMultiplier = hitProbability * reward + missExpectation;
+          assert.ok(Math.abs(expectedMultiplier - TARGET_RTP) < 1e-12);
+          assert.ok(Number.isFinite(reward) && reward > 0);
         }
+
+        const likelihoods = payoutProbabilities(aimId, secretId, profile);
+        const observedOutcome = likelihoods.indexOf(Math.max(...likelihoods));
+        posterior = updatePosterior(posterior, aimId, observedOutcome, profile);
+        used.add(aimId);
+
+        assert.ok(Math.abs(posterior.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+        assert.equal(posterior[aimId], 0);
+        assert.ok(posterior[secretId] > 0);
       }
     }
-
-    assert.ok(stateMap.size > 400);
-    assert.ok(minimumOpeningReward > 138);
-    assert.ok(maximumReward > 138);
   }
 });

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
-const STORAGE_KEY = "hotspot-archery-state-v7";
+const STORAGE_KEY = "hotspot-archery-state-v8";
 const LEGACY_STORAGE_KEYS = [
   "fourtune-vaults-state-v1",
   "hotspot-archery-state-v1",
@@ -12,25 +12,28 @@ const LEGACY_STORAGE_KEYS = [
   "hotspot-archery-state-v4",
   "hotspot-archery-state-v5",
   "hotspot-archery-state-v6",
+  "hotspot-archery-state-v7",
 ];
 const ARROW_STAKE = 10;
 const TARGET_RTP = 0.99;
 const TARGET_RADIUS = 0.495;
-const MIN_HEAT_BUCKET = 16;
-const DUST_PAYOUTS = [0, 0.01, 0.02] as const;
-const BURST_PAYOUTS = [0.55, 0.65, 0.75, 0.85, 0.95] as const;
-const DUST_MEAN = 0.01;
-const BURST_MEAN = 0.75;
+const PAYOUT_VALUES = [0, 0.01, 0.02, 0.08, 0.25, 0.55, 0.75, 0.95] as const;
+const COLD_LIKELIHOOD = [0.68, 0.18, 0.08, 0.035, 0.015, 0.006, 0.003, 0.001] as const;
+const HOT_LIKELIHOOD = [0.03, 0.04, 0.05, 0.08, 0.15, 0.23, 0.23, 0.19] as const;
 
 type Point = { x: number; y: number };
 type SearchPoint = Point & { id: number };
-type HeatBand = "cold" | "cool" | "warm" | "near";
+type SignalResult = "dust" | "spark" | "surge" | "blaze";
 
-type RewardProfile = Record<HeatBand, number>;
+type SignalProfile = {
+  radius: number;
+  noise: number;
+  sharpness: number;
+};
 
 type Hotspot = {
   pointId: number;
-  profile: RewardProfile;
+  profile: SignalProfile;
 };
 
 type Shot = SearchPoint & {
@@ -40,22 +43,24 @@ type Shot = SearchPoint & {
   returned: number;
   net: number;
   distance: number;
-  result: HeatBand | "hit" | "repeat";
-  possibleBefore: number;
-  possibleAfter: number;
+  result: SignalResult | "hit";
+  outcomeIndex: number | null;
+  hitChance: number;
+  entropyBefore: number;
+  entropyAfter: number;
   rewardOnAim: number;
 };
 
 type Round = {
   id: number;
   hotspot: Hotspot;
-  possibleIds: number[];
+  posterior: number[];
   shots: Shot[];
   finished: boolean;
 };
 
 type GameState = {
-  version: 7;
+  version: 8;
   balance: number;
   round: Round;
   sound: boolean;
@@ -110,12 +115,16 @@ function round2(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function createRewardProfile(): RewardProfile {
-  const cold = round2(randomBetween(0.02, 0.04));
-  const cool = round2(randomBetween(0.12, 0.18));
-  const warm = round2(randomBetween(0.32, 0.45));
-  const near = round2(randomBetween(0.6, 0.75));
-  return { cold, cool, warm, near };
+function round3(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function createSignalProfile(): SignalProfile {
+  return {
+    radius: round3(randomBetween(0.11, 0.18)),
+    noise: round3(randomBetween(0.02, 0.08)),
+    sharpness: round2(randomBetween(0.85, 1.35)),
+  };
 }
 
 function pointById(id: number) {
@@ -132,58 +141,132 @@ function nearestSearchPoint(point: Point) {
   );
 }
 
-function heatBandsForAim(
+function payoutProbabilities(
   aimedPointId: number,
-  possibleIds: number[],
+  hotspotPointId: number,
+  profile: SignalProfile,
 ) {
-  const aimedPoint = pointById(aimedPointId);
-  const candidates = possibleIds
-    .filter((possibleId) => possibleId !== aimedPointId)
-    .sort((aId, bId) => {
-      const separation = distance(aimedPoint, pointById(aId)) - distance(aimedPoint, pointById(bId));
-      return separation || aId - bId;
-    });
-  const bandCount = Math.min(
-    4,
-    Math.max(1, Math.floor(candidates.length / MIN_HEAT_BUCKET)),
+  const separation = distance(pointById(aimedPointId), pointById(hotspotPointId));
+  const gaussian = Math.exp(-(separation ** 2) / (2 * profile.radius ** 2));
+  const heat = profile.noise + (1 - profile.noise) * gaussian ** profile.sharpness;
+  return COLD_LIKELIHOOD.map(
+    (coldProbability, index) =>
+      (1 - heat) * coldProbability + heat * HOT_LIKELIHOOD[index],
   );
-  const labels: Record<number, HeatBand[]> = {
-    1: ["cold"],
-    2: ["near", "cold"],
-    3: ["near", "warm", "cold"],
-    4: ["near", "warm", "cool", "cold"],
-  };
-  const bands = new Map<number, HeatBand>();
-
-  candidates.forEach((candidateId, index) => {
-    const bucket = Math.min(
-      bandCount - 1,
-      Math.floor((index * bandCount) / candidates.length),
-    );
-    bands.set(candidateId, labels[bandCount][bucket]);
-  });
-
-  return bands;
 }
 
-function sampleMissMultiplier(expectedMean: number) {
-  const burstChance = (expectedMean - DUST_MEAN) / (BURST_MEAN - DUST_MEAN);
-  const payouts = randomUnit() < burstChance ? BURST_PAYOUTS : DUST_PAYOUTS;
-  return payouts[Math.floor(randomUnit() * payouts.length)];
+function expectedPayout(probabilities: number[]) {
+  return probabilities.reduce(
+    (total, probability, index) => total + probability * PAYOUT_VALUES[index],
+    0,
+  );
+}
+
+function sampleOutcome(probabilities: number[]) {
+  const roll = randomUnit();
+  let cumulative = 0;
+  for (let index = 0; index < probabilities.length; index += 1) {
+    cumulative += probabilities[index];
+    if (roll <= cumulative) return index;
+  }
+  return probabilities.length - 1;
+}
+
+function posteriorEntropy(posterior: number[]) {
+  return posterior.reduce(
+    (total, probability) =>
+      probability > 0 ? total - probability * Math.log2(probability) : total,
+    0,
+  );
+}
+
+function updatePosterior(
+  posterior: number[],
+  aimedPointId: number,
+  outcomeIndex: number,
+  profile: SignalProfile,
+) {
+  const weights = posterior.map((prior, hotspotPointId) =>
+    hotspotPointId === aimedPointId
+      ? 0
+      : prior * payoutProbabilities(aimedPointId, hotspotPointId, profile)[outcomeIndex],
+  );
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map((weight) => weight / total);
+}
+
+function expectedInformationGain(
+  posterior: number[],
+  aimedPointId: number,
+  profile: SignalProfile,
+) {
+  const entropyBefore = posteriorEntropy(posterior);
+  let expectedEntropyAfter = 0;
+
+  PAYOUT_VALUES.forEach((_, outcomeIndex) => {
+    const outcomeMass = posterior.reduce((total, probability, hotspotPointId) => {
+      if (hotspotPointId === aimedPointId || probability === 0) return total;
+      return total + probability * payoutProbabilities(
+        aimedPointId,
+        hotspotPointId,
+        profile,
+      )[outcomeIndex];
+    }, 0);
+    if (outcomeMass > 0) {
+      expectedEntropyAfter += outcomeMass * posteriorEntropy(
+        updatePosterior(posterior, aimedPointId, outcomeIndex, profile),
+      );
+    }
+  });
+
+  return entropyBefore - expectedEntropyAfter;
 }
 
 function captureReward(
   aimedPointId: number,
-  possibleIds: number[],
-  profile: RewardProfile,
+  posterior: number[],
+  profile: SignalProfile,
 ) {
-  if (!possibleIds.includes(aimedPointId)) return profile.cold;
-  const bands = heatBandsForAim(aimedPointId, possibleIds);
-  const missTotal = possibleIds.reduce((total, possibleId) => {
-    if (possibleId === aimedPointId) return total;
-    return total + profile[bands.get(possibleId) ?? "cold"];
+  const hitProbability = posterior[aimedPointId];
+  if (hitProbability <= 0) return 0;
+  const missExpectation = posterior.reduce((total, probability, hotspotPointId) => {
+    if (hotspotPointId === aimedPointId || probability === 0) return total;
+    return total + probability * expectedPayout(
+      payoutProbabilities(aimedPointId, hotspotPointId, profile),
+    );
   }, 0);
-  return round2(TARGET_RTP * possibleIds.length - missTotal);
+  return (TARGET_RTP - missExpectation) / hitProbability;
+}
+
+function signalResult(outcomeIndex: number): SignalResult {
+  if (outcomeIndex <= 2) return "dust";
+  if (outcomeIndex <= 4) return "spark";
+  if (outcomeIndex <= 6) return "surge";
+  return "blaze";
+}
+
+function missDistributionStats(
+  aimedPointId: number,
+  posterior: number[],
+  profile: SignalProfile,
+) {
+  const missMass = 1 - posterior[aimedPointId];
+  let firstMoment = 0;
+  let secondMoment = 0;
+  posterior.forEach((probability, hotspotPointId) => {
+    if (hotspotPointId === aimedPointId || probability === 0) return;
+    const likelihoods = payoutProbabilities(aimedPointId, hotspotPointId, profile);
+    likelihoods.forEach((likelihood, index) => {
+      const weighted = probability * likelihood;
+      firstMoment += weighted * PAYOUT_VALUES[index];
+      secondMoment += weighted * PAYOUT_VALUES[index] ** 2;
+    });
+  });
+  const mean = missMass > 0 ? firstMoment / missMass : 0;
+  return {
+    mean,
+    variance: missMass > 0 ? secondMoment / missMass - mean ** 2 : 0,
+  };
 }
 
 function createRound(id: number): Round {
@@ -191,9 +274,9 @@ function createRound(id: number): Round {
     id,
     hotspot: {
       pointId: Math.floor(randomUnit() * SEARCH_POINTS.length),
-      profile: createRewardProfile(),
+      profile: createSignalProfile(),
     },
-    possibleIds: [...ALL_POINT_IDS],
+    posterior: ALL_POINT_IDS.map(() => 1 / SEARCH_POINTS.length),
     shots: [],
     finished: false,
   };
@@ -201,7 +284,7 @@ function createRound(id: number): Round {
 
 function createGame(): GameState {
   return {
-    version: 7,
+    version: 8,
     balance: 500,
     round: createRound(1),
     sound: true,
@@ -226,27 +309,14 @@ function formatCredits(value: number) {
 
 function resultLabel(result: Shot["result"]) {
   if (result === "hit") return "HOTSPOT";
-  if (result === "repeat") return "NO NEW READ";
-  return `${result.toUpperCase()} READ`;
+  return result.toUpperCase();
 }
 
 function rewardQuality(multiplier: number) {
-  if (multiplier >= 100) return "LEGENDARY";
-  if (multiplier >= 80) return "MASSIVE";
-  if (multiplier >= 50) return "RICH";
+  if (multiplier >= 190) return "LEGENDARY";
+  if (multiplier >= 150) return "MASSIVE";
+  if (multiplier >= 100) return "RICH";
   return "VOLATILE";
-}
-
-function profileVariance(profile: RewardProfile) {
-  const means = Object.values(profile);
-  const mean = means.reduce((total, value) => total + value, 0) / means.length;
-  const dustSecondMoment = DUST_PAYOUTS.reduce((total, value) => total + value ** 2, 0) / DUST_PAYOUTS.length;
-  const burstSecondMoment = BURST_PAYOUTS.reduce((total, value) => total + value ** 2, 0) / BURST_PAYOUTS.length;
-  const secondMoment = means.reduce((total, expectedMean) => {
-    const burstChance = (expectedMean - DUST_MEAN) / (BURST_MEAN - DUST_MEAN);
-    return total + (1 - burstChance) * dustSecondMoment + burstChance * burstSecondMoment;
-  }, 0) / means.length;
-  return secondMoment - mean ** 2;
 }
 
 function varianceLabel(variance: number) {
@@ -262,11 +332,10 @@ function playTone(enabled: boolean, result: Shot["result"], multiplier: number) 
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const frequencies: Record<Shot["result"], number> = {
-    cold: 165,
-    cool: 220,
-    warm: 310,
-    near: 430,
-    repeat: 125,
+    dust: 150,
+    spark: 240,
+    surge: 390,
+    blaze: 560,
     hit: 720 + Math.min(multiplier, 8) * 35,
   };
   oscillator.frequency.setValueAtTime(frequencies[result], context.currentTime);
@@ -298,12 +367,12 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
-          if (parsed.version === 7 && parsed.round?.hotspot) {
+          if (parsed.version === 8 && parsed.round?.hotspot && parsed.round?.posterior) {
             setGame(parsed);
             setNotice(
               parsed.round.finished
                 ? `Hotspot captured in ${parsed.round.shots.length} arrows.`
-                : `${parsed.round.possibleIds.length} exact points remain possible.`,
+                : `Bayesian field loaded with ${posteriorEntropy(parsed.round.posterior).toFixed(2)} bits of uncertainty.`,
             );
             return;
           }
@@ -322,9 +391,7 @@ export default function Home() {
   }, [game]);
 
   const bestClue = useMemo(() => {
-    const misses = game?.round.shots.filter(
-      (shot) => shot.result !== "hit" && shot.result !== "repeat",
-    ) ?? [];
+    const misses = game?.round.shots.filter((shot) => shot.result !== "hit") ?? [];
     if (!misses.length) return null;
     return misses.reduce((best, shot) =>
       shot.multiplier > best.multiplier ? shot : best,
@@ -343,26 +410,36 @@ export default function Home() {
   const { round } = game;
   const hotspotPoint = pointById(round.hotspot.pointId);
   const aimPoint = nearestSearchPoint(aim);
-  const rewardValues = round.possibleIds.map((pointId) =>
-    captureReward(pointId, round.possibleIds, round.hotspot.profile),
-  );
-  const rewardLow = Math.min(...rewardValues);
-  const rewardHigh = Math.max(...rewardValues);
+  const openingPosterior = ALL_POINT_IDS.map(() => 1 / SEARCH_POINTS.length);
   const openingReward = captureReward(
     round.hotspot.pointId,
-    ALL_POINT_IDS,
+    openingPosterior,
     round.hotspot.profile,
   );
   const capturedShot = round.shots.find((shot) => shot.result === "hit") ?? null;
   const usedPointIds = new Set(round.shots.map((shot) => shot.id));
+  const currentEntropy = posteriorEntropy(round.posterior);
+  const openingEntropy = Math.log2(SEARCH_POINTS.length);
+  const informationGain = openingEntropy - currentEntropy;
+  const topProbability = Math.max(...round.posterior);
+  const aimProbability = round.posterior[aimPoint.id];
+  const aimedReward = usedPointIds.has(aimPoint.id)
+    ? 0
+    : captureReward(aimPoint.id, round.posterior, round.hotspot.profile);
+  const aimedInformation = usedPointIds.has(aimPoint.id)
+    ? 0
+    : expectedInformationGain(round.posterior, aimPoint.id, round.hotspot.profile);
   const roundNet = round.shots.reduce((sum, shot) => sum + shot.net, 0);
   const roundReturned = round.shots.reduce((sum, shot) => sum + shot.returned, 0);
   const realizedRtp = round.shots.length
     ? roundReturned / (round.shots.length * ARROW_STAKE)
     : 0;
   const lifetimeNet = game.stats.returned - game.stats.wagered;
-  const missVariance = profileVariance(round.hotspot.profile);
-  const missSpread = round.hotspot.profile.near - round.hotspot.profile.cold;
+  const openingMissStats = missDistributionStats(
+    round.hotspot.pointId,
+    openingPosterior,
+    round.hotspot.profile,
+  );
 
   function shoot(point: Point) {
     if (!game || game.round.finished || game.balance < ARROW_STAKE) return;
@@ -376,45 +453,58 @@ export default function Home() {
       setNotice("That slot already holds an arrow. Choose an open pin—no credits were charged.");
       return;
     }
-    const isPossible = round.possibleIds.includes(selected.id);
-    const isHit = isPossible && selected.id === round.hotspot.pointId;
-    const bands = heatBandsForAim(selected.id, round.possibleIds);
-    const rewardOnAim = isPossible
-      ? captureReward(selected.id, round.possibleIds, round.hotspot.profile)
-      : round.hotspot.profile.cold;
+    const isHit = selected.id === round.hotspot.pointId;
+    const rewardOnAim = captureReward(
+      selected.id,
+      round.posterior,
+      round.hotspot.profile,
+    );
+    const entropyBefore = posteriorEntropy(round.posterior);
     let result: Shot["result"];
     let multiplier: number;
-    let nextPossibleIds = round.possibleIds;
+    let outcomeIndex: number | null = null;
+    let nextPosterior = round.posterior;
 
     if (isHit) {
       result = "hit";
       multiplier = rewardOnAim;
-    } else if (!isPossible) {
-      result = "repeat";
-      multiplier = sampleMissMultiplier(round.hotspot.profile.cold);
+      nextPosterior = round.posterior.map((_, pointId) =>
+        pointId === round.hotspot.pointId ? 1 : 0,
+      );
     } else {
-      result = bands.get(round.hotspot.pointId) ?? "cold";
-      multiplier = sampleMissMultiplier(round.hotspot.profile[result]);
-      nextPossibleIds = round.possibleIds.filter((possibleId) =>
-        possibleId !== selected.id &&
-        bands.get(possibleId) === result,
+      const likelihoods = payoutProbabilities(
+        selected.id,
+        round.hotspot.pointId,
+        round.hotspot.profile,
+      );
+      outcomeIndex = sampleOutcome(likelihoods);
+      multiplier = PAYOUT_VALUES[outcomeIndex];
+      result = signalResult(outcomeIndex);
+      nextPosterior = updatePosterior(
+        round.posterior,
+        selected.id,
+        outcomeIndex,
+        round.hotspot.profile,
       );
     }
 
     const returned = round2(ARROW_STAKE * multiplier);
     const net = round2(returned - ARROW_STAKE);
+    const entropyAfter = posteriorEntropy(nextPosterior);
     const shotNumber = round.shots.length + 1;
     const shot: Shot = {
       ...selected,
-      key: Date.now() + shotNumber,
+      key: round.id * 10000 + shotNumber,
       number: shotNumber,
       multiplier,
       returned,
       net,
       distance: distance(selected, hotspotPoint),
       result,
-      possibleBefore: round.possibleIds.length,
-      possibleAfter: isHit ? 1 : nextPossibleIds.length,
+      outcomeIndex,
+      hitChance: round.posterior[selected.id],
+      entropyBefore,
+      entropyAfter,
       rewardOnAim,
     };
 
@@ -423,7 +513,7 @@ export default function Home() {
       balance: round2(game.balance + net),
       round: {
         ...round,
-        possibleIds: isHit ? [round.hotspot.pointId] : nextPossibleIds,
+        posterior: nextPosterior,
         shots: [...round.shots, shot],
         finished: isHit,
       },
@@ -445,11 +535,10 @@ export default function Home() {
     playTone(game.sound, result, multiplier);
     if (isHit) {
       setNotice(`Bullseye found in ${shotNumber} arrows — ${multiplier.toFixed(2)}× captured.`);
-    } else if (result === "repeat") {
-      setNotice(`Dead pin. Its volatile miss paid ${multiplier.toFixed(2)}× and added no new evidence.`);
     } else {
+      const nextLeader = Math.max(...nextPosterior);
       setNotice(
-        `${multiplier.toFixed(2)}× ${result} read — ${nextPossibleIds.length} exact points remain.`,
+        `${multiplier.toFixed(2)}× ${result} signal — entropy ${entropyBefore.toFixed(2)} → ${entropyAfter.toFixed(2)} bits; leader ${(nextLeader * 100).toFixed(1)}%.`,
       );
     }
   }
@@ -492,7 +581,7 @@ export default function Home() {
   function startNextRound() {
     setGame({ ...game, round: createRound(round.id + 1) });
     setAim({ x: 0.5, y: 0.5 });
-    setNotice("Fresh target. The exact hotspot and reward curve have both moved.");
+    setNotice("Fresh target. The hotspot and randomized Gaussian signal field have both moved.");
   }
 
   function refill() {
@@ -531,8 +620,8 @@ export default function Home() {
           <h1>UNLIMITED ARROWS.<br /><em>ONE HOTSPOT.</em></h1>
         </div>
         <p className="intro">
-          Hunt one exact point among 217 pins spread across the whole target.
-          Payouts rise sharply as you close in, turning every return into a clue.
+          Every payout is Bayesian evidence. Fire across 217 pins, watch the
+          probability field reshape itself, and hunt the live posterior peak.
         </p>
       </section>
 
@@ -542,11 +631,11 @@ export default function Home() {
 
           <div className="mission">
             <span className="section-label">YOUR READ</span>
-            <h2>FOLLOW THE HEAT. RULE OUT PINS. HIT FAST.</h2>
+            <h2>READ THE SIGNAL. WATCH THE POSTERIOR. STRIKE THE PEAK.</h2>
             <ol>
               <li><b>01</b><span>Fire at any search pin.</span></li>
-              <li><b>02</b><span>Higher payouts leak that the hotspot is closer.</span></li>
-              <li><b>03</b><span>Every arrow remains pinned until the reveal.</span></li>
+              <li><b>02</b><span>The exact payout updates all 217 probabilities.</span></li>
+              <li><b>03</b><span>Bright, enlarged pins are the Bayesian leaders.</span></li>
             </ol>
           </div>
 
@@ -555,12 +644,13 @@ export default function Home() {
             <p><span>GOOD-PLAY RTP</span><b>99.00%</b></p>
             <p><span>EXACT POINT X / Y</span><b>{round.finished ? `${(hotspotPoint.x * 100).toFixed(1)} / ${(hotspotPoint.y * 100).toFixed(1)}` : "██.█ / ██.█"}</b></p>
             <p><span>OPENING HOTSPOT</span><b>{round.finished ? `${openingReward.toFixed(2)}×` : "█.██×"}</b></p>
-            <p><span>MISS RANGE</span><b>{round.finished ? "0.00–0.95×" : "█.██–█.██×"}</b></p>
-            <p><span>MISS VARIANCE</span><b>{round.finished ? `${missVariance.toFixed(4)}×²` : "█.████×²"}</b></p>
+            <p><span>SIGNAL RADIUS</span><b>{round.finished ? `${(round.hotspot.profile.radius * 100).toFixed(1)}%` : "██.█%"}</b></p>
+            <p><span>NOISE FLOOR</span><b>{round.finished ? `${(round.hotspot.profile.noise * 100).toFixed(1)}%` : "█.█%"}</b></p>
+            <p><span>MISS VARIANCE</span><b>{round.finished ? `${openingMissStats.variance.toFixed(4)}×²` : "█.████×²"}</b></p>
           </div>
 
           <button type="button" className="rules-button" onClick={() => setShowRules(true)}>
-            WHY GOOD PLAY IS 99% <span>↗</span>
+            OPEN THE BAYES MATH <span>↗</span>
           </button>
         </aside>
 
@@ -586,13 +676,21 @@ export default function Home() {
               <span className="ring-groove groove-three" />
 
               {SEARCH_POINTS.map((point) => {
-                const possible = round.possibleIds.includes(point.id);
                 const used = usedPointIds.has(point.id);
+                const aimed = aimPoint.id === point.id && !round.finished && !used;
+                const relativeProbability = topProbability > 0
+                  ? round.posterior[point.id] / topProbability
+                  : 0;
                 return (
                   <span
-                    className={`search-pin ${possible ? "possible" : "eliminated"} ${used ? "used" : ""} ${aimPoint.id === point.id && !round.finished && !used ? "aimed" : ""}`}
+                    className={`search-pin ${relativeProbability >= 0.6 ? "likely" : "possible"} ${used ? "used" : ""} ${aimed ? "aimed" : ""}`}
                     key={point.id}
-                    style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                    style={{
+                      left: `${point.x * 100}%`,
+                      top: `${point.y * 100}%`,
+                      opacity: used ? 1 : 0.16 + 0.84 * Math.sqrt(relativeProbability),
+                      transform: `translate(-50%,-50%) scale(${aimed ? 1.8 : used ? 1 : 0.62 + 0.88 * Math.sqrt(relativeProbability)})`,
+                    }}
                   />
                 );
               })}
@@ -636,19 +734,20 @@ export default function Home() {
                 <span className="aim-reticle" style={{ left: `${aimPoint.x * 100}%`, top: `${aimPoint.y * 100}%` }}><i /></span>
               )}
             </button>
-            <span className="target-caption caption-left">217 FULL-BOARD PINS</span>
+            <span className="target-caption caption-left">217-PIN POSTERIOR FIELD</span>
             <span className="target-caption caption-right">RANGE 07</span>
           </div>
 
-          <div className="search-row" aria-label={`${round.possibleIds.length} hotspot locations remain possible`}>
+          <div className="search-row" aria-label={`Posterior leader ${(topProbability * 100).toFixed(2)} percent with ${currentEntropy.toFixed(2)} bits of entropy`}>
             <div><span className="section-label">ARROWS FIRED</span><strong>{round.shots.length}</strong></div>
-            <div><span className="section-label">POSSIBLE POINTS</span><strong>{round.possibleIds.length} / {SEARCH_POINTS.length}</strong></div>
-            <div><span className="section-label">HIT REWARD NOW</span><strong>{rewardLow.toFixed(2)}–{rewardHigh.toFixed(2)}×</strong></div>
+            <div><span className="section-label">POSTERIOR LEADER</span><strong>{(topProbability * 100).toFixed(2)}%</strong></div>
+            <div><span className="section-label">AIM INFO</span><strong>{usedPointIds.has(aimPoint.id) ? "USED" : `${aimedInformation.toFixed(2)} bits`}</strong></div>
+            <div><span className="section-label">AIM CHANCE / HIT</span><strong>{usedPointIds.has(aimPoint.id) ? "USED" : `${(aimProbability * 100).toFixed(2)}% / ${aimedReward.toFixed(2)}×`}</strong></div>
           </div>
 
           <div className="notice" aria-live="polite">
             <span className="pulse" /><p>{notice}</p>
-            {bestClue && <strong>HOTTEST MISS {bestClue.multiplier.toFixed(2)}×</strong>}
+            {bestClue && <strong>BIGGEST SIGNAL {bestClue.multiplier.toFixed(2)}×</strong>}
           </div>
         </section>
 
@@ -675,7 +774,7 @@ export default function Home() {
                   <span className={`shot-number ${shot.result}`}>{shot.number}</span>
                   <div>
                     <strong>{shot.multiplier.toFixed(2)}× · {resultLabel(shot.result)}</strong>
-                    <small>{shot.result === "hit" ? `${shot.possibleBefore} possible before capture` : shot.result === "repeat" ? "ruled-out pin repeated" : `${shot.possibleBefore} → ${shot.possibleAfter} possible`}</small>
+                    <small>{shot.result === "hit" ? `${(shot.hitChance * 100).toFixed(2)}% posterior at capture` : `${shot.entropyBefore.toFixed(2)} → ${shot.entropyAfter.toFixed(2)} bits · ${(shot.hitChance * 100).toFixed(2)}% aim`}</small>
                   </div>
                   <b className={shot.net >= 0 ? "positive" : "negative"}>{shot.net >= 0 ? "+" : ""}{formatCredits(shot.net)}</b>
                 </div>
@@ -685,15 +784,17 @@ export default function Home() {
 
           {round.finished && capturedShot ? (
             <div className="reveal-card">
-              <span>HOTSPOT CAPTURED · {rewardQuality(openingReward)} / {varianceLabel(missVariance)} VARIANCE</span>
+              <span>HOTSPOT CAPTURED · {rewardQuality(openingReward)} / {varianceLabel(openingMissStats.variance)} VARIANCE</span>
               <h3>FOUND IN {round.shots.length} ARROWS.</h3>
-              <p>The exact point paid {capturedShot.multiplier.toFixed(2)}×. Faster deductions expose the prize while more uncertainty—and more upside—still remains.</p>
+              <p>The posterior assigned this pin a {(capturedShot.hitChance * 100).toFixed(2)}% chance before impact. The exact point paid {capturedShot.multiplier.toFixed(2)}×.</p>
               <div className="reveal-stats">
                 <div><small>CAPTURE PAYOUT</small><strong>{capturedShot.multiplier.toFixed(2)}×</strong><em>FINAL ARROW</em></div>
                 <div><small>OPENING VALUE</small><strong>{openingReward.toFixed(2)}×</strong><em>{rewardQuality(openingReward)} HOTSPOT</em></div>
-                <div><small>MISS RANGE</small><strong>0.00–0.95×</strong><em>DUST OR BURST</em></div>
-                <div><small>MISS VARIANCE</small><strong>{missVariance.toFixed(4)}×²</strong><em>{varianceLabel(missVariance)} SIGNAL</em></div>
-                <div><small>HEAT MEAN EDGE</small><strong>{missSpread.toFixed(2)}×</strong><em>{round.hotspot.profile.cold.toFixed(2)}–{round.hotspot.profile.near.toFixed(2)}×</em></div>
+                <div><small>MISS RANGE</small><strong>0.00–0.95×</strong><em>DUST OR BLAZE</em></div>
+                <div><small>MISS VARIANCE</small><strong>{openingMissStats.variance.toFixed(4)}×²</strong><em>{varianceLabel(openingMissStats.variance)} SIGNAL</em></div>
+                <div><small>SIGNAL RADIUS</small><strong>{(round.hotspot.profile.radius * 100).toFixed(1)}%</strong><em>GAUSSIAN σ</em></div>
+                <div><small>NOISE / SHAPE</small><strong>{(round.hotspot.profile.noise * 100).toFixed(1)}% / {round.hotspot.profile.sharpness.toFixed(2)}</strong><em>FLOOR / EXPONENT</em></div>
+                <div><small>INFORMATION GAIN</small><strong>{informationGain.toFixed(2)} bits</strong><em>{openingEntropy.toFixed(2)} → {currentEntropy.toFixed(2)}</em></div>
                 <div><small>ARROWS USED</small><strong>{round.shots.length}</strong><em>UNLIMITED AVAILABLE</em></div>
                 <div><small>REALIZED RTP</small><strong>{(realizedRtp * 100).toFixed(0)}%</strong><em>THIS HUNT</em></div>
               </div>
@@ -701,8 +802,8 @@ export default function Home() {
             </div>
           ) : (
             <div className="live-tip">
-              <span>RANGE NOTE</span>
-              <p>Cold returns average 0.02–0.04×; near returns average 0.60–0.75×. Every payout leaks distance while each fresh possible pin remains exactly 99% EV.</p>
+              <span>BAYES NOTE</span>
+              <p>A 0.95× blaze strongly favors nearby pins; dust is more likely far away but never conclusive. Board brightness is the exact posterior after every signal.</p>
             </div>
           )}
 
@@ -721,27 +822,31 @@ export default function Home() {
 
       <footer>
         <p>PLAY-MONEY PROTOTYPE · NO DEPOSITS · NO WITHDRAWALS · NO CASH VALUE</p>
-        <p>FRESH POSSIBLE SHOTS ARE EXACTLY 99% EV · EVERY MISS PAYS LESS THAN 1×</p>
+        <p>EVERY OPEN PIN IS EXACTLY 99% EV · EVERY MISS PAYS LESS THAN 1×</p>
       </footer>
 
       {showRules && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="math-title">
           <div className="math-modal">
             <button type="button" className="modal-close" onClick={() => setShowRules(false)} aria-label="Close">×</button>
-            <span className="modal-kicker">THE 99% PROOF</span>
-            <h2 id="math-title">EVERY GOOD SHOT.<br />EXACTLY 99% EV.</h2>
-            <p>The hotspot is one exact point among the pins still consistent with your previous heat readings. Each miss returns either dust at 0.00–0.02× or a burst from 0.55–0.95×. Cold shots almost always return dust; near shots burst roughly 80%–100% of the time.</p>
+            <span className="modal-kicker">THE BAYESIAN HOUSE</span>
+            <h2 id="math-title">EVERY PAYOUT<br />MOVES THE MAP.</h2>
+            <p>The game maintains a probability p(h) for every unoccupied pin. A miss payout y has a distance-dependent likelihood L(y | d), built by blending cold and hot distributions through a randomized Gaussian signal field.</p>
             <div className="formula">
-              <small>JACKPOT FOR AIM POINT a WITH N POSSIBILITIES</small>
-              <strong>J(a) = 0.99N − Σ<sub>h ≠ a</sub> m(a,h)</strong>
+              <small>BAYES UPDATE AFTER AIM a RETURNS PAYOUT y</small>
+              <strong>p′(h) ∝ p(h) · L(y | d(a,h))</strong>
             </div>
             <div className="parameter-grid">
-              <div><span>GOOD SHOT</span><strong>a ∈ S</strong><p>Aim at any point that remains possible.</p></div>
-              <div><span>HIT CHANCE</span><strong>1 / N</strong><p>The secret is uniform over the surviving set.</p></div>
-              <div><span>EVERY MISS</span><strong>0.00–0.95×</strong><p>Far shots usually dust; hotter shots burst dramatically more often.</p></div>
+              <div><span>HIT CHANCE</span><strong>p(a)</strong><p>The live posterior mass at the pin you choose.</p></div>
+              <div><span>MISS SIGNAL</span><strong>L(y | d)</strong><p>Eight payouts from 0.00× to 0.95× carry noisy spatial evidence.</p></div>
+              <div><span>INFORMATION</span><strong>Δ entropy</strong><p>Skill means choosing shots that collapse uncertainty quickly.</p></div>
               <div><span>USED SLOT</span><strong>BLOCKED</strong><p>An occupied pin cannot be fired at again and costs nothing.</p></div>
             </div>
-            <p className="math-note">Here m(a,h) is the expected miss return, including its dust-or-burst draw. For a fresh possible point, E[M] = [J(a) + Σm(a,h)] / N = 0.99 exactly. Adaptive distance buckets keep each surviving set uniform and stop clues from collapsing the jackpot straight to 1×.</p>
+            <div className="formula formula-secondary">
+              <small>LIVE HIT REWARD FOR AIM a</small>
+              <strong>J(a) = [0.99 − Σ<sub>h ≠ a</sub> p(h) μ(a,h)] / p(a)</strong>
+            </div>
+            <p className="math-note">The miss term μ(a,h) is the expected payout at that exact distance. Therefore p(a)J(a) + Σp(h)μ(a,h) = 0.99 for every open pin—not just for one prescribed strategy. The strategy problem is information-theoretic: minimize the number of 1%-edge wagers needed to localize the hotspot.</p>
             <button type="button" className="close-primary" onClick={() => setShowRules(false)}>BACK TO THE RANGE</button>
           </div>
         </div>
